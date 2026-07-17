@@ -1,0 +1,27 @@
+Concur Buddy — version 2026.07.01.6
+
+This filename encodes the currently-committed version so you can tell at a glance
+on GitHub what's published. It must match APP_VERSION in
+expense_stager_windows_app/expense_stager.py (the app shows the same string in its
+title bar and bottom-left footer). dev/run_tests.py fails if the two diverge.
+
+Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
+day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
+to the new VERSION_<version>.txt name in the same commit.
+
+2026.07.01.6 — multi-select in the table (Ctrl/Shift-click): file a batch into a report
+via right-click → "Add to report…" OR by dragging the selected rows onto a report row.
+Delete and Mark Filed now act on the whole selection too.
+2026.07.01.5 — quick roadmap wins: Copy Expense button (duplicate a row as a fresh
+Draft); assign-to-report dropdown inside the expense dialog; ID column hidden from the
+table; hover hints on Export CSV / Export Config / Copy Expense.
+2026.07.01.4 — more built-in expense templates: added common-vendor templates mined
+from the sample reports (common national vendors), each pre-filled with its usual
+expense code + business purpose. Existing DBs get them once via a guarded top-up.
+2026.07.01.3 — per-machine inbox/receipt-root paths (fixes attach "Access denied" on a
+second synced machine; attach now errors loudly instead of silently failing); Filed
+reports hide from the default view; expand/collapse state survives a refresh.
+2026.07.01.2 — "Mark Filed" on a report row now files the report + all its expenses
+(was a silent no-op on reports).
+2026.07.01 — cross-machine attachment path re-anchoring; graceful missing-folder
+handling for Open Inbox / Open Receipt Root; on-screen version marker added.
