@@ -84,10 +84,12 @@ exists by default as an example; rename or replace it with your own.
 │ Quick Add  New Report │ Edit  Attach File  Mark Filed │ Add to Report     │  ← toolbar (the everyday actions,
 │ Open Receipt/Invoice │ Delete │ Open Concur  [More ▾]                     │     grouped; wraps when narrow)
 ├──────────────────────────────────────────────────────────────────────────┤
-│ Report / Expense   date  vendor  amount  status  doc  code  …             │
-│ ▸ [Report] Q2 Travel                                                      │  ← reports group their expenses
-│     [Expense] Marriott    …                                                │
-│   [Expense] Starbucks     …                                                │  ← loose (unassigned) expenses
+│ 5 open receipts · 3 need a file · 1 ready to file                         │  ← open-receipt counter
+├──────────────────────────────────────────────────────────────────────────┤
+│ [ ] Report / Expense   date  vendor  amount  status  doc  code  …         │  ← heading box = select all
+│ [ ] ▸ [Report] Q2 Travel                                                  │  ← reports group their expenses
+│      [x] [Expense] Marriott    …                                          │  ← ticked = selected
+│ [ ] [Expense] Starbucks     …                                             │  ← loose (unassigned) expenses
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,8 +100,20 @@ Move to User…, Add User…, the clipboard helpers (Copy Concur Summary / Copy 
 actions are also on the **right-click menu** directly on a row.
 
 **Keyboard shortcuts:** `Ctrl+N` new expense · `Ctrl+Shift+N` new report · `F2` edit selected · `Ctrl+D` copy
-expense · `Delete` delete selection · `F5` refresh. (`Delete`/`Ctrl+D` only act when the table itself has focus —
-pressing Delete inside the search box never deletes an expense.) `Esc` closes any dialog.
+expense · `Delete` delete selection · `Space` tick/untick the current row · `F5` refresh.
+(`Delete`/`Ctrl+D` only act when the table itself has focus — pressing Delete inside the search box never
+deletes an expense.) `Esc` closes any dialog.
+
+Just above the table, a **counter** keeps score of what is still on your plate: how many expenses are not
+marked *Filed* yet, how many of those have no receipt or invoice attached, and how many are already *Ready to
+file*. It deliberately ignores the search box, so it always shows the full pile — and it reads *"No open
+receipts — all caught up."* when you are clear.
+
+Every row carries a **check box on the left**, like Concur's own expense list. Ticking a box does exactly what
+Ctrl-clicking the row does: it adds (or removes) that one row from the selection and leaves the rest alone. So
+you can build up a batch with plain clicks and then hit **Add to Report**, **Mark Filed** or **Delete**.
+Ctrl/Shift-click still works and ticks the boxes to match, the box in the **column heading** selects or clears
+every expense at once, and `Space` toggles the row you are on.
 
 The center is a tree: **expense reports** appear as parent rows with their assigned expenses nested underneath,
 and **loose expenses** (not yet in a report) sit at the top level. The `doc` column shows what's attached:

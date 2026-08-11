@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.07.01.6
+Concur Buddy — version 2026.08.11
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,10 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
 
+2026.08.11 — home-screen open-receipt counter (how many expenses are still not Filed, how
+many of those have no file attached yet, how many are Ready to file) and left-aligned check
+boxes on every table row: ticking a box does exactly what Ctrl-click does, and the box in the
+column heading selects or clears every expense at once.
 2026.07.01.6 — multi-select in the table (Ctrl/Shift-click): file a batch into a report
 via right-click → "Add to report…" OR by dragging the selected rows onto a report row.
 Delete and Mark Filed now act on the whole selection too.

@@ -3,10 +3,10 @@ import os, re, csv, json, sqlite3, shutil, subprocess, webbrowser, sys, calendar
 from pathlib import Path
 from datetime import date, datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Expense Stager"
-APP_VERSION = "2026.07.05.4"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.11"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "expense_stager.sqlite3"
@@ -272,6 +272,24 @@ class Tooltip:
                  wraplength=320, padx=6, pady=3).pack()
     def _hide(self, e=None):
         if self.tip: self.tip.destroy(); self.tip=None
+CHECKBOX_PX = 16  # tk Treeview has no checkbox column, so every row carries a small check-box IMAGE in the
+# tree column (left-aligned, like Concur's own "Available Expenses" list). The images are drawn in code —
+# no icon files to ship, and nothing to go missing in a frozen build.
+def make_checkbox_images(master):
+    """{False: empty box, True: ticked box} as PhotoImages. A fresh PhotoImage starts fully transparent
+    and only the pixels we `put` become opaque, so the box sits cleanly on a selected (highlighted) row."""
+    border, body, ticked, tick = '#5a5a5a', '#ffffff', '#1668b8', '#ffffff'
+    imgs = {}
+    for checked in (False, True):
+        img = tk.PhotoImage(master=master, width=CHECKBOX_PX, height=CHECKBOX_PX)
+        img.put(ticked if checked else body, to=(2, 2, 14, 14))  # box body
+        for edge in [(2, 2, 14, 3), (2, 13, 14, 14), (2, 2, 3, 14), (13, 2, 14, 14)]:
+            img.put(ticked if checked else border, to=edge)      # 1px outline
+        if checked:
+            for x, y in [(3, 7), (4, 8), (5, 9), (6, 8), (7, 7), (8, 6), (9, 5), (10, 4)]:
+                img.put(tick, to=(x, y, x + 2, y + 2))           # the tick, 2px thick
+        imgs[checked] = img
+    return imgs
 def is_within(child, parent):
     try: return parent and Path(child).resolve().parent == Path(parent).resolve() or str(Path(child).resolve()).startswith(str(Path(parent).resolve()) + os.sep)
     except Exception: return False
@@ -1058,6 +1076,17 @@ class App(tk.Tk):
         self.more_btn=ttk.Menubutton(actions, text='More ▾'); actions.attach(self.more_btn)
         Tooltip(self.more_btn, hints['More ▾'])
         self.more_menu=self._build_more_menu(self.more_btn); self.more_btn.configure(menu=self.more_menu)
+        # At-a-glance counter of what's still on the pile: everything not yet marked Filed, plus the two
+        # sub-counts that actually drive the next action (no file attached yet / already Ready to file).
+        # Recomputed on every refresh; scoped to the user picked in the filter row.
+        countbar=ttk.Frame(self,padding=(6,2)); countbar.pack(fill='x')
+        self.open_count=tk.StringVar()
+        self.count_font=tkfont.nametofont('TkDefaultFont').copy(); self.count_font.configure(weight='bold')
+        self.count_lbl=ttk.Label(countbar,textvariable=self.open_count,font=self.count_font,foreground='#1668b8')
+        self.count_lbl.pack(side='left')
+        Tooltip(self.count_lbl,'Open = every expense for this user that is not marked Filed.\n'
+                               '"need a file" = no receipt and no invoice attached yet.\n'
+                               'Counts ignore the search box, so this is always the full pile.')
         # Version footer at the very bottom-left — always visible so it's obvious which build is running.
         # The right side doubles as a transient status line (e.g. "Copied to clipboard").
         ver=ttk.Frame(self,padding=(6,1)); ver.pack(side='bottom',fill='x')
@@ -1067,7 +1096,28 @@ class App(tk.Tk):
         ttk.Style().configure('Treeview', rowheight=30)
         # 'id' stays in `columns` (values tuples are positional) but is hidden from view via displaycolumns —
         # the internal row id isn't useful to the user and just adds clutter.
-        self.tree=ttk.Treeview(self,columns=('id','date','vendor','amount','status','doc','code','purpose','ready'),displaycolumns=('date','vendor','amount','status','doc','code','purpose','ready'),show='tree headings',selectmode='extended'); self.tree.heading('#0',text='Report / Expense'); self.tree.column('#0',width=240)
+        self.tree=ttk.Treeview(self,columns=('id','date','vendor','amount','status','doc','code','purpose','ready'),displaycolumns=('date','vendor','amount','status','doc','code','purpose','ready'),show='tree headings',selectmode='extended'); self.tree.column('#0',width=265)
+        # Left-aligned row check boxes, like Concur's expense list. The box IS the selection: ticking one
+        # does exactly what Ctrl-click does (adds/removes that row without clearing the rest), and
+        # Ctrl/Shift-click ticks the boxes back. The heading box selects/clears every expense at once.
+        self.chk_img=make_checkbox_images(self); self._chk_state={}
+        # ttk's stock heading layout parks the heading image on the RIGHT; copy the current theme's layout
+        # with the image moved left so the select-all box sits directly above the row boxes. Purely
+        # cosmetic and theme-specific, so a theme that won't take it just keeps the stock placement.
+        try:
+            stl=ttk.Style()
+            def image_left(nodes):
+                out=[]
+                for name,opts in nodes:
+                    opts=dict(opts)
+                    if name.endswith('image'): opts['side']='left'
+                    if 'children' in opts: opts['children']=image_left(opts['children'])
+                    out.append((name,opts))
+                return out
+            stl.layout('Checkbox.Treeview.Heading', image_left(stl.layout('Treeview.Heading')))
+            self.tree.configure(style='Checkbox.Treeview')
+        except Exception: pass
+        self.tree.heading('#0',text='Report / Expense',image=self.chk_img[False],anchor='w',command=self.toggle_select_all)
         for c,w in [('id',55),('date',95),('vendor',190),('amount',85),('status',120),('doc',70),('code',95),('purpose',210),('ready',60)]: self.tree.heading(c,text=c.title()); self.tree.column(c,width=w)
         self.tree.pack(fill='both',expand=True,padx=4,pady=4); self.tree.bind('<Double-1>',self.on_double)
         # Multi-select (Ctrl/Shift-click) + two ways to file a batch into a report: right-click menu, or drag onto a report row.
@@ -1086,6 +1136,11 @@ class App(tk.Tk):
         self.tree.bind('<Button-3>', self.popup_menu)
         self.tree.tag_configure('droptarget', background='#cce6ff')  # report row lights up while a drag hovers it
         self._drag_ids=[]; self._drag_from=None; self._dragging=False; self._press_xy=(0,0); self._drop_row=None; self._ghost=None
+        # NB: the check-box handler must be bound BEFORE the drag handler — it returns 'break' on a box
+        # click, which stops the rest of the chain (including tk's own click-collapses-the-selection).
+        self.tree.bind('<ButtonPress-1>', self._check_click, add='+')
+        self.tree.bind('<<TreeviewSelect>>', self._sync_checks, add='+')
+        self.tree.bind('<space>', self._space_toggle)
         self.tree.bind('<ButtonPress-1>', self._drag_start, add='+')
         self.tree.bind('<B1-Motion>', self._drag_motion, add='+')
         self.tree.bind('<ButtonRelease-1>', self._drag_drop, add='+')
@@ -1150,15 +1205,17 @@ class App(tk.Tk):
     def refresh(self):
         # Remember which reports are expanded so a rebuild (e.g. after attaching to an expense) doesn't collapse them.
         open_ids={iid for iid in self.tree.get_children('') if self.tree.item(iid,'open')}
-        self.refresh_users(); self.tree.delete(*self.tree.get_children()); uid=self.current_user_id(); term=self.search.get(); st=self.status.get()
+        self.refresh_users(); self.tree.delete(*self.tree.get_children()); self._chk_state={}; uid=self.current_user_id(); term=self.search.get(); st=self.status.get()
         for r in S.rows('SELECT * FROM reports WHERE user_id=? ORDER BY created_at DESC',(uid,)) if uid else []:
             # A Filed report disappears from the default view (with its filed expenses) just like a filed expense does.
             if not self.show_filed.get() and st!='Filed' and r['status']=='Filed': continue
-            total=S.scalar('SELECT COALESCE(SUM(amount),0) FROM expenses WHERE report_id=?',(r['id'],)); parent=self.tree.insert('', 'end', iid=f"R{r['id']}", text='[Report] '+r['name'], values=(r['id'],r['report_date'] or '', '', f"{total:.2f}", r['status'], 'Report', '', r['travel_purpose'] or '', ''), open=(f"R{r['id']}" in open_ids))
+            total=S.scalar('SELECT COALESCE(SUM(amount),0) FROM expenses WHERE report_id=?',(r['id'],)); parent=self.tree.insert('', 'end', iid=f"R{r['id']}", text='[Report] '+r['name'], image=self.chk_img[False], values=(r['id'],r['report_date'] or '', '', f"{total:.2f}", r['status'], 'Report', '', r['travel_purpose'] or '', ''), open=(f"R{r['id']}" in open_ids))
+            self._chk_state[parent]=False
             for e in S.rows('SELECT * FROM expenses WHERE report_id=? ORDER BY transaction_date DESC',(r['id'],)):
                 if self.match(e,term,st): self.insert_exp(parent,e)
         for e in S.rows('SELECT * FROM expenses WHERE user_id=? AND report_id IS NULL ORDER BY transaction_date DESC, id DESC',(uid,)) if uid else []:
             if self.match(e,term,st): self.insert_exp('',e)
+        self._sync_checks(); self.refresh_counter()
     def match(self,e,term,st):
         if not self.show_filed.get() and st!='Filed' and e['status']=='Filed': return False  # default-hide the filed archive
         if not (st=='All' or e['status']==st): return False
@@ -1173,7 +1230,72 @@ class App(tk.Tk):
     @staticmethod
     def _docs(e):
         return '+'.join(x for x,p in [('Receipt', e['receipt_path']),('Invoice', e['invoice_path'])] if p) or '—'  # both docs can coexist on one record
-    def insert_exp(self,parent,e): self.tree.insert(parent,'end',iid=f"E{e['id']}", text='[Expense] '+e['vendor'], values=(e['id'],e['transaction_date'],e['vendor'],money_part(e['amount']),e['status'],self._docs(e),e['expense_type_code'] or '',e['business_purpose'] or '','✓' if e['status'] in ('Ready to file','Filed') else ''))
+    def insert_exp(self,parent,e):
+        self.tree.insert(parent,'end',iid=f"E{e['id']}", text='[Expense] '+e['vendor'], image=self.chk_img[False], values=(e['id'],e['transaction_date'],e['vendor'],money_part(e['amount']),e['status'],self._docs(e),e['expense_type_code'] or '',e['business_purpose'] or '','✓' if e['status'] in ('Ready to file','Filed') else ''))
+        self._chk_state[f"E{e['id']}"]=False
+    def refresh_counter(self):
+        """The home-screen counter. Deliberately NOT filtered by the search box / status dropdown — it
+        answers "how much is still on my plate", which a filtered view would understate."""
+        uid=self.current_user_id()
+        if not uid: self.open_count.set(''); return
+        n=lambda where: S.scalar(f"SELECT COUNT(*) FROM expenses WHERE user_id=? {where}",(uid,)) or 0
+        openn=n("AND status<>'Filed'")
+        if not openn: self.open_count.set('No open receipts — all caught up.'); return
+        need=n("AND status<>'Filed' AND COALESCE(receipt_path,'')='' AND COALESCE(invoice_path,'')=''")
+        ready=n("AND status='Ready to file'")
+        parts=[f"{openn} open receipt{'' if openn==1 else 's'}"]
+        if need: parts.append(f"{need} need{'s' if need==1 else ''} a file")
+        if ready: parts.append(f"{ready} ready to file")
+        self.open_count.set('   ·   '.join(parts))
+    def _hits_checkbox(self, e, row):
+        """True when the click landed on the row's check box. Element hit-test first (tk names it
+        'image'/'Treeitem.image'); geometry fallback for any theme that names its elements differently."""
+        el=str(self.tree.identify_element(e.x, e.y) or '')
+        if 'image' in el: return True
+        if 'text' in el or 'indicator' in el: return False
+        bb=self.tree.bbox(row,'#0')
+        if not bb: return False
+        try: indent=int(ttk.Style().lookup('Treeview','indent') or 20)
+        except Exception: indent=20
+        x0=bb[0]+indent*(2 if self.tree.parent(row) else 1)  # the indicator (expander) owns the first slot
+        return x0-6 <= e.x <= x0+CHECKBOX_PX+6
+    def _check_click(self, e):
+        """Clicking a row's box == Ctrl-clicking the row: it toggles just that row in/out of the
+        selection and leaves the rest alone. Clicks anywhere else on the row fall through untouched."""
+        if self.tree.identify_region(e.x, e.y)!='tree': return
+        row=self.tree.identify_row(e.y)
+        if not row or not self._hits_checkbox(e, row): return
+        self._drag_from=None; self._dragging=False  # a box click never starts a drag
+        if row in self.tree.selection():
+            self.tree.selection_remove(row)
+            if self.tree.focus()==row: self.tree.focus('')
+        else: self.tree.selection_add(row); self.tree.focus(row)
+        self._sync_checks(); return 'break'  # repaint now — <<TreeviewSelect>> only lands on the next idle pass
+    def _space_toggle(self, e):
+        """Space ticks/unticks the row you're on — keyboard parity with clicking its box."""
+        row=self.tree.focus()
+        if not row: return
+        if row in self.tree.selection(): self.tree.selection_remove(row)
+        else: self.tree.selection_add(row)
+        self._sync_checks(); return 'break'
+    def toggle_select_all(self):
+        """The heading check box: tick every expense row, or clear them all if they're already ticked."""
+        rows=[iid for iid in self._chk_state if iid.startswith('E')]
+        if not rows: return
+        sel=set(self.tree.selection())
+        if all(r in sel for r in rows): self.tree.selection_remove(*rows)
+        else: self.tree.selection_add(*rows)
+        self._sync_checks()
+    def _sync_checks(self, e=None):
+        """Keep every box in step with the real selection, so Ctrl/Shift-click (and the right-click menu)
+        tick the boxes too — the box is a view of the selection, never a second source of truth."""
+        sel=set(self.tree.selection())
+        for iid,was in list(self._chk_state.items()):
+            if not self.tree.exists(iid): self._chk_state.pop(iid,None); continue
+            now=iid in sel
+            if now!=was: self.tree.item(iid,image=self.chk_img[now]); self._chk_state[iid]=now
+        exp=[iid for iid in self._chk_state if iid.startswith('E')]
+        self.tree.heading('#0',image=self.chk_img[bool(exp) and all(i in sel for i in exp)])
     def selected(self):
         iid=self.tree.focus(); return (iid[0], int(iid[1:])) if iid else (None,None)
     def quick_add(self): ExpenseDialog(self, default_user_id=self.current_user_id())
