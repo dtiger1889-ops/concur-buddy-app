@@ -507,6 +507,8 @@ CONCUR_COLUMNS = {  # normalised export header -> expense field ('_' names are h
     'comment': 'comment', 'comments': 'comment', 'attendees': 'attendees',
     'is this a vendor invoice': 'is_vendor_invoice', 'vendor invoice': 'is_vendor_invoice',
     'personal expense (do not reimburse)': 'personal_no_reimburse', 'personal expense': 'personal_no_reimburse',
+    'missing receipt acknowledgment form attached': 'missing_receipt_ack', 'missing receipt acknowledgment': 'missing_receipt_ack',
+    'missing receipt affidavit': 'missing_receipt_ack', 'missing receipt declaration': 'missing_receipt_ack',
     'receipt': '_receipt_in_concur', 'receipt status': '_receipt_in_concur', 'report name': '_report_name',
 }
 # Concur greys these out on the expense form because they arrive from the card feed and nothing in Concur
@@ -516,7 +518,7 @@ CARD_FIELDS = ('transaction_date', 'vendor', 'amount', 'payment_type', 'currency
 # Everything else in an export IS editable in Concur, so a filled-in Concur Buddy value that disagrees is a
 # real conflict and the user picks a side. Empty here = just take the export's value.
 MERGE_FIELDS = ('business_purpose', 'business_name', 'city', 'state', 'country', 'comment', 'attendees',
-                'is_vendor_invoice', 'personal_no_reimburse')
+                'is_vendor_invoice', 'personal_no_reimburse', 'missing_receipt_ack')
 # The expense type's code and its name are two halves of ONE fact, so they are decided TOGETHER under the
 # pseudo-field '_expense_type'. Deciding them apart would let "keep my code" + "take their name" mint a
 # code/name pair that exists in neither system (one code carrying another type's official name).
@@ -525,7 +527,8 @@ FIELD_LABELS = {'_expense_type': 'Expense type', 'transaction_date': 'Transactio
                 'payment_type': 'Payment type', 'currency': 'Currency', 'expense_type_code': 'Expense type code',
                 'expense_type_label': 'Expense type', 'business_purpose': 'Business purpose', 'business_name': 'Business name',
                 'city': 'City', 'state': 'State', 'country': 'Country', 'comment': 'Comment', 'attendees': 'Attendees',
-                'is_vendor_invoice': 'Is a vendor invoice', 'personal_no_reimburse': 'Personal / no reimburse'}
+                'is_vendor_invoice': 'Is a vendor invoice', 'personal_no_reimburse': 'Personal / no reimburse',
+                'missing_receipt_ack': 'Missing receipt acknowledgment'}
 MATCH_DAY_WINDOW = 31  # how far apart two dates can be before an amount match needs the name to back it up
 MATCH_NAME_FLOOR = 0.5  # …or how alike the two vendor strings must look instead
 def _col_index(ref):
@@ -601,7 +604,7 @@ def parse_concur_export(path):
             elif f == 'transaction_date': row[f] = parse_export_date(val)
             elif f == 'amount': row[f] = parse_export_money(val)
             elif f == '_receipt_in_concur': row[f] = _yes(val)
-            elif f in ('is_vendor_invoice', 'personal_no_reimburse'): row[f] = 1 if _yes(val) else 0
+            elif f in ('is_vendor_invoice', 'personal_no_reimburse', 'missing_receipt_ack'): row[f] = 1 if _yes(val) else 0
             elif f == '_expense_type':
                 # "53103-US LOCAL TRANSPORTATION" -> ('53103', 'US LOCAL TRANSPORTATION'). Split on the FIRST
                 # hyphen only, and never inside the code: type names carry hyphens of their own.
