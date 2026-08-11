@@ -32,6 +32,7 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
   - [Users & delegates](#users--delegates)
   - [Searching & filtering](#searching--filtering)
   - [Filing into Concur](#filing-into-concur)
+  - [Importing a Concur export (reconciling)](#importing-a-concur-export-reconciling)
   - [Settings](#settings)
   - [Import / export](#import--export)
 - [Where your data lives](#where-your-data-lives)
@@ -322,6 +323,44 @@ On the filter row:
 - **Open Receipt Root** / **Open Inbox** (More ▾) jump to those folders.
 - After filing in Concur, select the expense and click **Mark Filed**.
 
+### Importing a Concur export (reconciling)
+**More ▾ → Import Concur Export (.xlsx)…** goes the *other* way: it reads a report you exported out of Concur
+and reconciles it against what is already staged here. Export the report's entries view from Concur as Excel,
+then point this at the file — no extra software needed, the app reads `.xlsx` on its own.
+
+**How rows are matched.** The **amount** is the anchor: only expenses matching to the cent are candidates at
+all, which at this volume is nearly unique. The transaction date and how alike the two vendor names look only
+*rank* those candidates — they never invent one. That matters because the card feed's merchant string rarely
+looks like what you typed (`COLPARK LOC 958` vs `Colonial parking`). A same-amount row is only *proposed* as a
+merge when something backs it up — a date within about a month, or names that genuinely resemble each other;
+otherwise it defaults to *Add as new* with the near-miss still listed one click away.
+
+**Nothing is written until you press Apply.** Every row shows what will happen first — merge into a named staged
+expense, add as new, or skip — and you can change any of them. Double-click a row to pick a different match or
+settle a field.
+
+**Which side wins.** Concur greys out the fields that come from the card feed — transaction date, vendor name,
+amount, payment type, currency — because nothing can edit them. The export is therefore the authoritative copy
+and always wins for those; they are listed before you apply, but there is nothing to decide. Everything you
+*can* edit in Concur (expense type, business purpose, city, business name, vendor-invoice flag, comment,
+attendees) works the other way: if the field is empty here the export fills it in for free, and if both sides
+have a value you pick the side. Those conflicts default to **keeping your Concur Buddy value** — flip any of
+them to the export's in the review dialog. The expense type's *code and name* are decided together as one
+choice, so a merge can never mint a code/name pair that exists in neither system.
+
+**Attachments are never touched.** An export has no files in it, so a merge leaves your staged receipt and
+invoice exactly where they are — as does the status. If Concur's own *Receipt* column says it does **not** have
+an image for an expense you have a file for here, that's called out in the summary, so you know what still
+needs uploading.
+
+Also on import: unmatched rows become new expenses (status *Receipt received* if Concur already holds the
+receipt, otherwise *Awaiting receipt*), everything can be grouped under a report named after the file, any
+expense type the export mentions is learned into your Expense Codes glossary, and any column this app has no
+field for is kept as a note on new expenses rather than dropped.
+
+> Because the export's vendor name wins, a merged expense takes on the card's merchant string. Files already
+> organized on disk keep the name they were filed under.
+
 ### Settings
 Set your **Inbox path** and **Receipt root** (with **Browse** buttons) and **Add User**. These are stored in your
 local database. The **Database** section shows where the database currently lives and lets you:
@@ -339,6 +378,8 @@ local database. The **Database** section shows where the database currently live
 > include users — users live in the database, so a synced database carries them, an exported config does not.)
 
 ### Import / export (all under More ▾)
+- **Import Concur Export (.xlsx)…** — reads a report exported out of Concur and reconciles it with what is
+  staged here: see [Importing a Concur export](#importing-a-concur-export-reconciling).
 - **Export Expenses to CSV…** — dumps all expense rows to a CSV for backup or analysis.
 - **Export for Autofill…** — writes the selected expenses (or, with nothing selected, everything
   *Ready to file*) as `staged_expenses.json` for the **Concur Buddy Autofill** browser extension,

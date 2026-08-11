@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.11
+Concur Buddy — version 2026.08.11.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,13 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
 
+2026.08.11.2 — reverse import: More > Import Concur Export (.xlsx) reads a report exported
+out of Concur and reconciles it with what is staged here. Amount-anchored matching (date and
+vendor name only rank the candidates), a review list where nothing is written until Apply, and
+per-field conflict resolution: card-fed fields always come from the export, editable fields
+default to keeping the staged value. Attachments and status are never touched by a merge.
+Also fixes FlowBar under-requesting its height by its own padding, which clipped the bottom of
+a button row in any dialog sized to its content.
 2026.08.11 — home-screen open-receipt counter (how many expenses are still not Filed, how
 many of those have no file attached yet, how many are Ready to file) and left-aligned check
 boxes on every table row: ticking a box does exactly what Ctrl-click does, and the box in the
