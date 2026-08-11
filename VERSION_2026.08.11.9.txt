@@ -1,0 +1,82 @@
+Concur Buddy — version 2026.08.11.9
+
+This filename encodes the currently-committed version so you can tell at a glance
+on GitHub what's published. It must match APP_VERSION in
+expense_stager_windows_app/expense_stager.py (the app shows the same string in its
+title bar and bottom-left footer). dev/run_tests.py fails if the two diverge.
+
+Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
+day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
+to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.11.9 — FIXES the attendee export file. Its columns were transcribed by eye and had Attendee
+Title and Company the wrong way round, and it wrote one header row where Concur's own template carries
+two (the internal field names, then the labels). Both are now read straight out of the shipped
+AttendeeImportTemplate.xls, and the test suite parses that file and fails if the app's column list ever
+drifts from it again. Nobody would have noticed from a successful import: the one done so far had only
+names filled in, which is all Concur needs.
+2026.08.11.8 — FIXES a break in .7: adding an org/oracle code opened two prompt boxes in a chain,
+which could leave input grabbed by a window you could not see (it read as a freeze); it is one plain
+editor now, and its button sits with the other actions. The picker also only searched on a keystroke,
+so codes you already had were unreachable — clicking it (or the new arrow) now lists them, and you can
+search by name instead of guessing the number. New: set the org alias on an EXPENSE without creating a
+report, and double-clicking a report header opens its fields (the +/- still expands it). Email domains
+are no longer rewritten by default — Concur does not care which one it gets.
+2026.08.11.7 — attendees: your own address book, with a paste box that accepts names, addresses or
+spreadsheet columns in any of the usual shapes and shows what it understood before saving. Emails are
+tidied to the domain Concur holds (add your own from=to rewrites in Settings).
+"Export for Concur" writes the attendee-import spreadsheet in the template's own columns, with the
+attendee TYPE CODE, ready for Add Attendees > Import Attendees; "Copy emails" covers the search route
+instead, since the template has no email column. Reachable from the Attendees box on any expense.
+2026.08.11.6 — three from live use: (1) personal spend you are owed turns RED in the last 7 days of
+a month, with a counter segment, since it has to be claimed back inside 30 days; (2) adding expenses
+to a report now gathers COPIES of their receipts into <receipt root>\\<user>\\Reports\\<report>, with
+More > Open Report Folder to refresh and open it — originals never move; (3) set your cards up in
+My Cards (last four + network + what that card means), and OCR will name the card that paid and offer
+to set the payment type. A card matches only when BOTH its network and its last four appear, so an
+invoice number or a "we accept Visa" footer cannot trigger it.
+2026.08.11.5 — chasing receipts: click the home-screen counter (or More > Select the receipts I am
+owed) to tick every expense flagged NEEDED, then "Ask for Receipts" turns the ticked ones into plain
+text built to survive a paste into Gmail or Outlook — vendor, amount, date, one bulleted line each,
+with a total. Editable before copying. README now covers the Concur import and the receipt limit.
+2026.08.11.4 — receipts you actually owe: the main list now says NEEDED or "not needed" in the
+Doc column and tints the rows that owe one, using a receipt limit you can set in Settings
+(defaults to $75; set it to whatever your own expense policy says). The counter and the expense dialog's own warning follow the
+same number. Import screens reworked for legibility: buttons grouped in labelled boxes, rows
+colour-coded by what they need from you, a tick once you have reviewed a row, DECIDE/LOCKED/FILL
+chips in the review table, and "Merge" renamed "Update existing" everywhere because the bare
+verb never said what into what. Dialogs that opened with their bottom row under the taskbar now
+measure where they actually landed and pull themselves back on-screen.
+2026.08.11.3 — import review, reworked after live use: the per-row screen is now a plain
+comparison table (Field / In Concur Buddy / In this export / Use) instead of prose. Fields the
+card feed owns are marked locked and are not up for debate; fields blank here just take the
+export; only fields with a value on BOTH sides ask you to pick a winner — per field, or all of
+them at once with one button. Every button in the import list now has a hover hint and the three
+row actions are labelled as acting on the selected rows.
+2026.08.11.2 — reverse import: More > Import Concur Export (.xlsx) reads a report exported
+out of Concur and reconciles it with what is staged here. Amount-anchored matching (date and
+vendor name only rank the candidates), a review list where nothing is written until Apply, and
+per-field conflict resolution: card-fed fields always come from the export, editable fields
+default to keeping the staged value. Attachments and status are never touched by a merge.
+Also fixes FlowBar under-requesting its height by its own padding, which clipped the bottom of
+a button row in any dialog sized to its content.
+2026.08.11 — home-screen open-receipt counter (how many expenses are still not Filed, how
+many of those have no file attached yet, how many are Ready to file) and left-aligned check
+boxes on every table row: ticking a box does exactly what Ctrl-click does, and the box in the
+column heading selects or clears every expense at once.
+2026.07.01.6 — multi-select in the table (Ctrl/Shift-click): file a batch into a report
+via right-click → "Add to report…" OR by dragging the selected rows onto a report row.
+Delete and Mark Filed now act on the whole selection too.
+2026.07.01.5 — quick roadmap wins: Copy Expense button (duplicate a row as a fresh
+Draft); assign-to-report dropdown inside the expense dialog; ID column hidden from the
+table; hover hints on Export CSV / Export Config / Copy Expense.
+2026.07.01.4 — more built-in expense templates: added common-vendor templates mined
+from the sample reports (common national vendors), each pre-filled with its usual
+expense code + business purpose. Existing DBs get them once via a guarded top-up.
+2026.07.01.3 — per-machine inbox/receipt-root paths (fixes attach "Access denied" on a
+second synced machine; attach now errors loudly instead of silently failing); Filed
+reports hide from the default view; expand/collapse state survives a refresh.
+2026.07.01.2 — "Mark Filed" on a report row now files the report + all its expenses
+(was a silent no-op on reports).
+2026.07.01 — cross-machine attachment path re-anchoring; graceful missing-folder
+handling for Open Inbox / Open Receipt Root; on-screen version marker added.

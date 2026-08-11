@@ -1,0 +1,6 @@
+__pycache__/
+*.sqlite3
+_*_test.py
+.venv/
+*.orig
+*.rej
