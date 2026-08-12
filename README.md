@@ -1,6 +1,6 @@
 # Concur Buddy
 
-![Concur Buddy main window](screenshots/concur-buddy-window.png)
+![Concur Buddy default screen and Quick Add window](screenshots/concur-buddy-window.png)
 
 A fast Windows desktop helper for **staging receipts and expenses before you file them in SAP Concur**.
 
