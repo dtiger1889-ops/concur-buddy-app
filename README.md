@@ -1,5 +1,7 @@
 # Expense Stager
 
+![Expense Stager main window](screenshots/expense-window.png)
+
 A fast Windows desktop helper for **staging receipts and expenses before you file them in SAP Concur**.
 
 Concur is slow, and procurement-card charges show up days after you actually spend the money — by then the
