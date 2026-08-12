@@ -6,11 +6,12 @@ from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
-APP_TITLE = "Expense Stager"
-APP_VERSION = "2026.08.11.9"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_TITLE = "Concur Buddy"
+APP_VERSION = "2026.08.12.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
-DB_NAME = "expense_stager.sqlite3"
+DB_NAME = "concur_buddy.sqlite3"
+LEGACY_DB_NAME = "expense_stager.sqlite3"
 CONCUR_URL = "https://us2.concursolutions.com/"
 # A record can hold BOTH a receipt and an invoice; status tracks where the item is in the staging lifecycle.
 STATUSES = ["Draft", "Awaiting invoice", "Awaiting receipt", "Receipt received", "Ready to file", "Filed"]
@@ -293,8 +294,39 @@ TEMPLATE_SEED = [
     ('Doodle subscription', {'vendor': 'Doodle', 'business_purpose': 'Productivity software', 'payment_type': PAYMENT_TYPES[0]}),
     ('Staples office supplies', {'vendor': 'Staples', 'business_purpose': 'Office supplies', 'payment_type': PAYMENT_TYPES[0]}),
 ]
-APP_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "ExpenseStager"
-APP_DIR.mkdir(parents=True, exist_ok=True)
+APPDATA_ROOT = Path(os.getenv("APPDATA", str(Path.home())))
+APP_DIR = APPDATA_ROOT / "ConcurBuddy"
+LEGACY_APP_DIR = APPDATA_ROOT / "ExpenseStager"
+
+def migrate_legacy_app_data(app_dir=APP_DIR, legacy_app_dir=LEGACY_APP_DIR):
+    """Copy pre-rebrand local state forward once, preserving the old files as a rollback copy.
+
+    A custom/synced database pointer stays pointed at the same file. Only the old default database is
+    copied to the new Concur Buddy default path and repointed, so upgrades do not strand existing data.
+    """
+    app_dir = Path(app_dir); legacy_app_dir = Path(legacy_app_dir)
+    app_dir.mkdir(parents=True, exist_ok=True)
+    if not legacy_app_dir.exists() or legacy_app_dir.resolve() == app_dir.resolve():
+        return False
+    changed = False
+    for name in ("db_location.txt", "local_settings.json"):
+        old, new = legacy_app_dir / name, app_dir / name
+        if old.exists() and not new.exists():
+            shutil.copy2(old, new); changed = True
+    old_default = legacy_app_dir / LEGACY_DB_NAME
+    new_default = app_dir / DB_NAME
+    if old_default.exists() and not new_default.exists():
+        shutil.copy2(old_default, new_default); changed = True
+    pointer = app_dir / "db_location.txt"
+    if pointer.exists() and new_default.exists():
+        try:
+            if Path(pointer.read_text(encoding="utf-8").strip()).resolve() == old_default.resolve():
+                pointer.write_text(str(new_default), encoding="utf-8"); changed = True
+        except Exception:
+            pass
+    return changed
+
+migrate_legacy_app_data()
 DEFAULT_DB_PATH = APP_DIR / DB_NAME
 # The DB itself can be relocated (e.g. to a Google-Drive-synced folder). Its location is recorded in a tiny
 # pointer file that ALWAYS lives in the fixed %APPDATA% dir -- the DB can't store its own location (chicken/egg).
@@ -938,7 +970,7 @@ def parse_concur_export(path):
     return rows, re.sub(r'\s+', ' ', name.replace('_', ' ')).strip(), unknown
 def vendor_similarity(a, b):
     """0..1 likeness of two vendor strings, ignoring case/punctuation. The card feed's descriptor rarely
-    matches what you typed ('COLPARK LOC 958' vs 'Colonial parking'), so this only RANKS candidates."""
+    matches what you typed ('EXAMPLE PARKING 123' vs 'Sample Parking'), so this only RANKS candidates."""
     norm = lambda s: re.sub(r'[^a-z0-9 ]', ' ', q(s).lower()).strip()
     return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio()
 def date_gap(a, b):

@@ -1,12 +1,12 @@
-# Expense Stager
+# Concur Buddy
 
-![Expense Stager main window](screenshots/expense-window.png)
+![Concur Buddy main window](screenshots/concur-buddy-window.png)
 
 A fast Windows desktop helper for **staging receipts and expenses before you file them in SAP Concur**.
 
 Concur is slow, and procurement-card charges show up days after you actually spend the money — by then the
-vendor name is mangled, you've forgotten which code to use, and you can't remember who was at the lunch. Expense
-Stager is the quick scratchpad you open *the moment money is spent*: log the expense with nothing but a vendor
+vendor name is mangled, you've forgotten which code to use, and you can't remember who was at the lunch. Concur
+Buddy is the quick scratchpad you open *the moment money is spent*: log the expense with nothing but a vendor
 name, drop the receipt file in later, let it remember your codes and attendees, and group everything into reports
 so the eventual Concur filing is just copy-and-paste.
 
@@ -66,9 +66,9 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
 2. **(Optional) OCR support** — only needed if you want the app to read text out of image/PDF receipts:
    - Install [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki).
    - `pip install pytesseract pillow pypdf`
-3. **Launch it** — double-click **`run_expense_stager.bat`**, or from a terminal run:
+3. **Launch it** — double-click **`run_concur_buddy.bat`**, or from a terminal run:
    ```
-   python expense_stager.py
+   python concur_buddy.py
    ```
 
 That's it. The first launch creates your local database automatically; no account, no sign-in.
@@ -78,7 +78,7 @@ That's it. The first launch creates your local database automatically; no accoun
 ## First-time setup
 
 **On your very first launch**, the app asks where to keep its database. Choose **Yes** to use the default
-location (`%APPDATA%\ExpenseStager`), or **No** to pick a folder yourself — e.g. a **Google Drive folder** so it
+location (`%APPDATA%\ConcurBuddy`), or **No** to pick a folder yourself — e.g. a **Google Drive folder** so it
 backs up and can be shared across your devices. You can change this any time later in **Settings → Database**.
 
 When you open the app, click **Settings** once and set:
@@ -215,7 +215,7 @@ later stage:
 - **Mark Filed** on the main window stamps it *Filed* with a timestamp and tucks it into the archive.
 
 ### Attaching files & how they're organized on disk
-When you attach a file, Expense Stager copies it into:
+When you attach a file, Concur Buddy copies it into:
 
 ```
 <Receipt Root>\<User>\<Year>\YYYY-MM-DD Vendor Amount Receipt.ext
@@ -358,7 +358,7 @@ then point this at the file — no extra software needed, the app reads `.xlsx` 
 **How rows are matched.** The **amount** is the anchor: only expenses matching to the cent are candidates at
 all, which at this volume is nearly unique. The transaction date and how alike the two vendor names look only
 *rank* those candidates — they never invent one. That matters because the card feed's merchant string rarely
-looks like what you typed (`COLPARK LOC 958` vs `Colonial parking`). A same-amount row is only *proposed* as a
+looks like what you typed (`EXAMPLE PARKING 123` vs `Sample Parking`). A same-amount row is only *proposed* as a
 merge when something backs it up — a date within about a month, or names that genuinely resemble each other;
 otherwise it defaults to *Add as new* with the near-miss still listed one click away.
 
@@ -481,8 +481,8 @@ Chasing a receipt usually means emailing whoever has it. **Ask for Receipts** (t
 turns the ticked expenses into plain text built for that email:
 
 ```
-• MD BOARD OF PHYSICIANS — $512.00 — Jul 17, 2026
-• 92549 - BWI HOURLY GAR — $150.00 — Jul 24, 2026
+• Sample Conference Center — $512.00 — Jul 17, 2026
+• Example Parking Garage — $150.00 — Jul 24, 2026
 
 2 receipts, $662.00 total
 ```
@@ -548,14 +548,14 @@ Inbox path and Receipt root are stored per-machine; everything else is in the da
 Your database is stored **outside this app folder**, by default at:
 
 ```
-%APPDATA%\ExpenseStager\expense_stager.sqlite3
+%APPDATA%\ConcurBuddy\concur_buddy.sqlite3
 ```
 
 That means updating the app (replacing this folder) **never touches your data**. It also means a fresh download
 of the app starts completely empty — no personal data travels with the code.
 
 You can relocate the database (e.g. to a synced Google Drive folder) on first launch or later via **Settings →
-Database** (see above). When you do, a small pointer file at `%APPDATA%\ExpenseStager\db_location.txt` records where
+Database** (see above). When you do, a small pointer file at `%APPDATA%\ConcurBuddy\db_location.txt` records where
 it went, so the app finds it on the next launch.
 
 Organized receipt files live under your chosen **Receipt root** (default `Documents\Expense Receipts`).
@@ -566,7 +566,7 @@ Organized receipt files live under your chosen **Receipt root** (default `Docume
 
 Download the latest copy of this folder and replace your old one. Because your database and receipts live
 elsewhere (above), updating is safe — the new version upgrades your database in place automatically. Optionally
-back up `%APPDATA%\ExpenseStager\expense_stager.sqlite3` first.
+back up `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` first.
 
 ---
 
@@ -577,4 +577,4 @@ back up `%APPDATA%\ExpenseStager\expense_stager.sqlite3` first.
 | `python` is not recognized | Python isn't on your PATH. Reinstall Python 3.11+ with *"Add Python to PATH"* ticked, or run with the full path to `python.exe`. |
 | OCR box says "OCR unavailable" | Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and `pip install pytesseract pillow pypdf`. The rest of the app still works without it. |
 | Attached file "no longer exists" when opening | The original was moved or deleted after attaching. Re-attach it. |
-| I want a clean slate | Close the app and delete `%APPDATA%\ExpenseStager\expense_stager.sqlite3` — it will be recreated empty on next launch. |
+| I want a clean slate | Close the app and delete `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` — it will be recreated empty on next launch. |

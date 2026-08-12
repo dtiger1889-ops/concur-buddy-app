@@ -14,7 +14,7 @@ already-logged-in Concur session (no passwords, no SSO/Duo handling anywhere).
 ## How it works (v0.3 architecture — matters for debugging)
 No content script. The popup injects the fill function **on demand into the page's MAIN
 world** via `chrome.scripting.executeScript` — the exact mechanism verified live against a
-a real Concur expense. v0.1/0.2 used a content script instead; that ran in
+real Concur expense. v0.1/0.2 used a content script instead; that ran in
 Chrome's isolated world and wasn't injected into already-open tabs, which made Fill a silent
 no-op — the bug fixed by this design. The Concur tab never needs reloading.
 
@@ -63,5 +63,5 @@ reading its `data-nuiexp="field-…"` attribute (Concur's own stable test id). U
 - Auto-matching: read the report/Available Expenses rows and pair them with staged expenses by
   vendor + amount + date, instead of the human picking from the popup list.
 - Native-messaging bridge: pull staged expenses straight from Concur Buddy's DB and write
-  "Filled" status back (see `Apps/resources/browser_autofill_bridge_pattern.md`, Tier 2).
+  "Filled" status back.
 - Per-type field maps (airfare: ticket number, class of service — already captured).
