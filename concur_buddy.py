@@ -2,12 +2,12 @@
 import os, re, csv, json, sqlite3, shutil, subprocess, webbrowser, sys, calendar, base64, zipfile, difflib
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.12.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.20.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -388,6 +388,12 @@ def safe_filename(s):
 def money_part(amount):
     try: return f"{float(clean_number(amount)):.2f}"
     except Exception: return "0.00"
+def autofill_filename(n, total):
+    """A unique-per-export name so successive exports never collide or overwrite each other.
+    Everything in it is procedurally derived: a UTC stamp to the second, how many expenses the
+    file holds, and their dollar total — e.g. staged_expenses_20260820T143012Z_7exp_1234.56.json."""
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    return f"staged_expenses_{stamp}_{n}exp_{total:.2f}.json"
 def clean_number(s):
     """Coerce free-typed money text into a clean float string. Strips $, commas, spaces, stray chars;
     keeps digits, one dot, and a leading minus. '' / junk -> '0'. Used so numeric fields never store '1,405.00'."""
@@ -1031,36 +1037,208 @@ def apply_field(vals, row, field):
     else: vals[field] = row[field]
     return vals
 
+# --- Expense-type search engine -------------------------------------------------------------------
+# The whole point of the app is FINDING the right expense type when you don't know its official name.
+# Institutional expense-type names (e.g. a "Promotional Items" or "Uniforms" line) are never the words a
+# person reaches for ("clothing", "swag", "giveaway"). So the search does three things a plain LIKE can't:
+# multi-word matching across code+name+tags+notes (any order), everyday-English synonym expansion, and
+# a typo-tolerant fallback. All of it only widens what a search FINDS — the value stored is still the
+# verbatim Concur code/name. The synonym table is org-neutral English, safe for the public build.
+PICKER_STOPWORDS = {'the','a','an','to','of','for','and','or','with','in','on','at','by','from',
+                    'item','items','expense','type','stuff','thing','things','some','my','our',
+                    'give','away','giving','need','buy','bought','paid','pay'}
+FIELD_W = {'code':6,'name':5,'tags':3,'notes':2}  # which field a match landed in, most trustworthy first
+# Everyday word <-> the institutional vocabulary official expense-type names use. Each group is matched by
+# WHOLE WORD, so it deliberately carries BOTH the human word AND the official term: typing "clothing"
+# reaches a type named with words like "promotion"/"publicity"/"uniforms" because those live in the same
+# group. Whole-word matching is why short members ('cap','air') are safe — they no longer hit inside
+# 'capitalized' or 'repairs'. Org-neutral English, safe to ship in the public build.
+SYNONYM_GROUPS = [
+    # branded clothing / promo giveaways -> promotion / publicity / uniforms type names
+    {'clothing','clothes','apparel','uniform','uniforms','shirt','shirts','tshirt','tshirts','jacket','jackets',
+     'hat','hats','cap','caps','swag','merch','merchandise','branded','giveaway','giveaways','promotional',
+     'promotion','promotions','promo','publicity','wearable','wearables','logo','logos','tote','totes'},
+    {'food','meal','meals','lunch','dinner','breakfast','catering','catered','restaurant','dining',
+     'refreshments','snacks','snack','beverage','beverages','coffee','banquet'},
+    {'taxi','cab','cabs','rideshare','uber','lyft','transportation','transport','local','metro','subway',
+     'bus','train','rail','commute','mileage','parking'},
+    {'flight','flights','airfare','airfares','plane','airline','airlines'},
+    {'hotel','hotels','lodging','motel','accommodation','accommodations','stay','room','rooms','airbnb'},
+    {'software','saas','subscription','subscriptions','app','apps','application','license','licence',
+     'licenses','cloud','online','computing'},
+    {'computer','computing','laptop','laptops','hardware','equipment','monitor','monitors','peripheral',
+     'peripherals','device','devices','electronics','tech'},
+    {'office','supplies','supply','stationery','stationary','paper','pens','toner','ink'},
+    {'printing','print','prints','reproduction','copies','copying','flyer','flyers','brochure','brochures',
+     'poster','posters','banner','banners','signage','binding'},
+    {'event','events','conference','conferences','reception','receptions','venue','venues','meeting',
+     'meetings','hosting','host','special','activity','activities'},
+    {'registration','training','course','courses','seminar','seminars','workshop','workshops','tuition',
+     'education','educational'},
+    {'membership','memberships','dues','association','associations'},
+    {'postage','shipping','mail','mailing','freight','courier','fedex','ups','usps','delivery'},
+    {'phone','telephone','telecom','mobile','cell','cellular','internet','wifi','data','broadband'},
+    {'gift','gifts','award','awards','recognition','prize','prizes','incentive','incentives'},
+    {'car','vehicle','rental','fuel','gas','gasoline','toll','tolls'},
+    {'entertainment','tickets','ticket','show','shows','sponsorship','sponsor'},
+    {'marketing','advertising','advertisement','advertisements','ads','media','campaign','outreach','publicity'},
+    {'consultant','consulting','contractor','contract','freelance','honorarium','speaker','professional'},
+]
+_SYN_INDEX = {}
+for _g in SYNONYM_GROUPS:
+    for _w in _g: _SYN_INDEX.setdefault(_w, set()).update(_g)
+_SYN_VOCAB = sorted(_SYN_INDEX)
+def _expand_word(word):
+    """A query word plus every everyday-synonym in its group(s). A word we don't know is first snapped to
+    the nearest known everyday word (so 'clohting' -> 'clothing'), giving typo tolerance where it matters."""
+    word=word.lower()
+    if word in _SYN_INDEX: return {word} | _SYN_INDEX[word]
+    near=difflib.get_close_matches(word, _SYN_VOCAB, n=1, cutoff=0.84)
+    if near: return {word, near[0]} | _SYN_INDEX[near[0]]
+    return {word}
+def picker_query_words(term):
+    """Split a free-typed query into meaningful lowercase words (drop punctuation + stopwords)."""
+    return [w for w in re.split(r'[^0-9a-z]+', (term or '').lower()) if w and w not in PICKER_STOPWORDS]
+def _tokens(s):
+    return {t for t in re.split(r'[^a-z0-9]+', (s or '').lower()) if t}
+def _match_word(w, alts, field_toks, code_raw):
+    """Best way query-word w hits a row: (score, field, matched_term, is_direct) or (0,...). The literal
+    word may match a whole token, a token PREFIX (>=3 chars, so 'print'->'printing'), or a code substring;
+    synonyms match a whole token only — that whole-word rule is what stops 'cap' hitting 'capitalized'."""
+    best=(0,None,None,False)
+    for field,toks in field_toks.items():
+        weight=FIELD_W[field]
+        if w in toks or (len(w)>=3 and any(t.startswith(w) for t in toks)) or (field=='code' and w in code_raw):
+            if weight+2>best[0]: best=(weight+2, field, w, True)   # a literal hit beats a synonym hit
+            continue
+        hit=next((a for a in alts if a!=w and a in toks), None)
+        if hit and weight>best[0]: best=(weight, field, hit, False)
+    return best
+def rank_expense_codes(rows, term, vendor_codes=(), limit=12):
+    """Rank expense-code rows for a free-typed query. Multi-word AND across code/name/tags/notes with
+    everyday-English synonym expansion and typo snapping. `vendor_codes` = codes already used with the
+    vendor on the form (a ranking nudge, never a filter). Returns [(row_dict, why), ...] best first.
+    Pure and GUI-free so it is unit-testable without Tk."""
+    words=picker_query_words(term)
+    if not words: return []
+    vendor_codes={str(c) for c in vendor_codes if c}
+    scored=[]
+    for r in rows:
+        code_raw=q(r['code']).lower()
+        field_toks={'code':_tokens(r['code']),'name':_tokens(r['name']),'tags':_tokens(r['tags']),'notes':_tokens(r['notes'])}
+        total=0; matched=0; reasons=[]
+        for w in words:
+            score,field,termhit,direct=_match_word(w, _expand_word(w), field_toks, code_raw)
+            if score: total+=score; matched+=1; reasons.append((w,field,termhit,direct))
+        if not matched: continue
+        all_matched=matched==len(words); fav=int(r['favorite'] or 0); code=q(r['code'])
+        # AND-complete matches float above partial ones; then raw score; favorites and this vendor's own
+        # history are tie-breakers, so the code you actually use for this vendor tends to come up first.
+        boost=(1000 if all_matched else 0)+total+(4 if fav else 0)+(20 if code in vendor_codes else 0)
+        scored.append((boost, all_matched, fav, code, dict(r), reasons))
+    if not scored:  # nothing matched even with synonyms -> typo-tolerant fallback on whole name/tag tokens
+        for r in rows:
+            toks=_tokens(f"{q(r['name'])} {q(r['tags'])}")
+            ratio=max((difflib.SequenceMatcher(None,w,t).ratio() for w in words for t in toks), default=0)
+            if ratio>=0.78:
+                scored.append((ratio, False, int(r['favorite'] or 0), q(r['code']), dict(r), [('~','name',None,False)]))
+    scored.sort(key=lambda t:(-t[0], -t[1], -t[2], t[3]))
+    return [(r, _why_label(reasons)) for _,_,_,_,r,reasons in scored[:limit]]
+def _why_label(reasons):
+    """A short 'why this surfaced' note for a picker row — shown only when the reason isn't obvious from
+    the visible name/code (i.e. it matched a hidden tag/note, or came in through a synonym / near-miss)."""
+    if reasons and reasons[0][0]=='~': return 'closest match'
+    bits=[]
+    for w,field,term,direct in reasons:
+        if direct and field in ('name','code'): continue       # self-evident from the row text
+        if term and term!=w: bits.append(f'{w}→{term}')       # matched via a synonym (word -> term)
+        elif field in ('tags','notes'): bits.append(term or w)  # matched a hidden field
+    seen=set(); uniq=[b for b in bits if not (b in seen or seen.add(b))]
+    return ('matches ' + ', '.join(uniq[:2])) if uniq else ''
+
 class CodePicker(ttk.Frame):
-    """Autocomplete entry for expense codes. Filters as you type a number or name; with the field empty
-    (e.g. when you click into it) it lists your FAVORITE codes so they're reachable straight from the dialog.
-    Favorites are marked with a leading star. A '★ Favorites' button re-opens the favorites list any time."""
-    def __init__(self, master, code_var, label_var):
-        super().__init__(master); self.code_var=code_var; self.label_var=label_var
+    """Find-the-right-expense-type box. Type anything — a number, the official name, or the everyday word
+    you actually think in ('clothing', 'swag', 'taxi', 'flight') — and it searches code + name + tags +
+    notes at once, expands common words to the institutional terms (so 'clothing' also finds a promotion-
+    or uniforms-type line), tolerates typos, and ranks the code you use for this vendor
+    first. Each row shows WHY it surfaced when that isn't obvious. Empty box lists your ★ favorites. When
+    you pick a code the plain word you searched is remembered on it, so next time it's a direct hit."""
+    def __init__(self, master, code_var, label_var, vendor_var=None):
+        super().__init__(master); self.code_var=code_var; self.label_var=label_var; self.vendor_var=vendor_var
+        self._results=[]; self._last_words=[]
         top=ttk.Frame(self); top.pack(fill='x')
         self.entry=ttk.Entry(top, textvariable=code_var); self.entry.pack(side='left', fill='x', expand=True)
         ttk.Button(top, text='★ Favorites', width=11, command=self.show_favorites).pack(side='left')
-        self.lb=tk.Listbox(self, height=6); self.lb.pack(fill='x'); self.lb.pack_forget()
+        self.lb=tk.Listbox(self, height=7); self.lb.pack(fill='x'); self.lb.pack_forget()
         self.entry.bind('<KeyRelease>', self.search); self.entry.bind('<FocusIn>', self.search); self.lb.bind('<<ListboxSelect>>', self.pick)
     def show_favorites(self):
         self.code_var.set(''); self.entry.focus_set(); self.search()
+    def _vendor_name(self):
+        return q(self.vendor_var.get()).strip() if self.vendor_var is not None else ''
+    def _vendor_history(self):
+        """(code, label) pairs this vendor has actually been filed under, most-used first, with the vendor's
+        remembered last code pinned to the top — so a known vendor's usual code is row 1 before any typing."""
+        v=self._vendor_name()
+        if not v: return []
+        out=[(r['code'], q(r['name'])) for r in S.rows(
+            "SELECT expense_type_code code, expense_type_label name, COUNT(*) n FROM expenses "
+            "WHERE vendor=? AND expense_type_code<>'' GROUP BY expense_type_code, expense_type_label ORDER BY n DESC, code",(v,))]
+        last=S.row('SELECT last_code, last_label FROM vendors WHERE name=?',(v,))
+        if last and last['last_code']:
+            pair=(last['last_code'], q(last['last_label']))
+            out=[pair]+[p for p in out if p!=pair]
+        return out
+    def _vendor_codes(self):
+        """Just the codes from this vendor's history — the ranking nudge passed to rank_expense_codes."""
+        return [c for c,_ in self._vendor_history()]
     def search(self, e=None):
-        term=self.code_var.get().strip(); self.lb.delete(0,'end')
+        term=self.code_var.get().strip(); self.lb.delete(0,'end'); self._results=[]
+        self._last_words=picker_query_words(term)
         if term:
-            rows=S.rows("SELECT code,name,favorite FROM expense_codes WHERE code LIKE ? OR name LIKE ? OR tags LIKE ? ORDER BY favorite DESC, code LIMIT 12", (term+'%', '%'+term+'%', '%'+term+'%'))
-        else:  # empty -> surface favorites (the whole point: pick a usual code without remembering its number)
-            rows=S.rows("SELECT code,name,favorite FROM expense_codes WHERE favorite=1 ORDER BY code")
-        for r in rows: self.lb.insert('end', f"{'★ ' if r['favorite'] else ''}{r['code']} — {r['name']}")
-        self.lb.pack(fill='x') if rows else self.lb.pack_forget()
+            allrows=S.rows("SELECT code,name,tags,favorite,notes FROM expense_codes")
+            ranked=rank_expense_codes(allrows, term, vendor_codes=self._vendor_codes(), limit=12)
+            for r,why in ranked:
+                star='★ ' if r.get('favorite') else ''
+                self.lb.insert('end', f"{star}{r['code']} — {r['name']}" + (f"    · {why}" if why else ''))
+                self._results.append((r['code'], r['name']))
+            if not ranked:
+                self.lb.insert('end', '  (no match — try a plainer word, e.g. "clothing", "taxi", "food")')
+        else:
+            # Empty box: a known vendor's own codes first (row 1 = the usual answer), then your ★ favorites.
+            shown=set()
+            for code,name in self._vendor_history():
+                r=S.row('SELECT code,name FROM expense_codes WHERE code=? AND name=?',(code,name)) or S.row('SELECT code,name FROM expense_codes WHERE code=? ORDER BY name LIMIT 1',(code,))
+                key=(r['code'], r['name']) if r else (code, name)
+                if key in shown: continue
+                self.lb.insert('end', f"{key[0]} — {key[1]}    · used for {self._vendor_name()}")
+                self._results.append(key); shown.add(key)
+            for r in S.rows("SELECT code,name FROM expense_codes WHERE favorite=1 ORDER BY code"):
+                key=(r['code'], r['name'])
+                if key in shown: continue
+                self.lb.insert('end', f"★ {key[0]} — {key[1]}"); self._results.append(key); shown.add(key)
+        self.lb.pack(fill='x') if self.lb.size() else self.lb.pack_forget()
     def pick(self, e=None):
         sel=self.lb.curselection()
-        if not sel: return
-        # Parse code AND name from the picked line — a code can name several official types,
-        # so a code-only lookup could land on the wrong row.
-        line=self.lb.get(sel[0]).lstrip('★ '); code,_,name=line.partition(' — ')
+        if not sel or sel[0]>=len(self._results): return  # the 'no match' hint row isn't pickable
+        code,name=self._results[sel[0]]  # kept alongside the list so the ' · why' suffix never confuses parsing
         r=S.row('SELECT * FROM expense_codes WHERE code=? AND name=?',(code,name)) or S.row('SELECT * FROM expense_codes WHERE code=?',(code,))
-        if r: self.code_var.set(r['code']); self.label_var.set(r['name'])
+        if r:
+            self.code_var.set(r['code']); self.label_var.set(r['name']); self._learn(r['code'], r['name'])
         self.lb.pack_forget()
+    def _learn(self, code, name):
+        """Remember the everyday word you searched as a tag on the code you chose, so the same search is a
+        direct hit next time. Only genuinely-new words (>=3 letters, not already in the code/name/tags) are
+        added — numbers and words it already matches are skipped, so this stays low-noise and self-correcting
+        (edit or clear tags any time in More ▾ -> Glossaries -> Expense Codes)."""
+        if not self._last_words: return
+        row=S.row('SELECT tags FROM expense_codes WHERE code=? AND name=?',(code,name))
+        if not row: return
+        have=f"{code} {name} {q(row['tags'])}".lower()
+        add=[w for w in dict.fromkeys(self._last_words) if len(w)>=3 and not w.isdigit() and w not in have]
+        if not add: return
+        tags=q(row['tags']).strip()
+        S.execute('UPDATE expense_codes SET tags=? WHERE code=? AND name=?',
+                  ((tags+', ' if tags else '')+', '.join(add), code, name))
 
 class OraclePicker(ttk.Frame):
     """Autocomplete for org/oracle aliases. Clicking the box lists what you already have (favourites first) —
@@ -1169,7 +1347,7 @@ class ExpenseDialog(tk.Toplevel):
         add('Amount after CC fee', fee_frame)
         add('Currency', ttk.Combobox(frm, textvariable=v('currency','USD'), values=CURRENCIES)); add('Status', ttk.Combobox(frm, textvariable=v('status','Draft'), values=STATUSES, state='readonly'))
         # No binary "Document type" dropdown: a single record holds both a Receipt and an Invoice (see paths + attach buttons below).
-        add('Expense type code', CodePicker(frm, v('expense_type_code',''), v('expense_type_label',''))); add('Expense type label', ttk.Entry(frm, textvariable=self.vars['expense_type_label']))
+        add('Expense type code', CodePicker(frm, v('expense_type_code',''), v('expense_type_label',''), vendor_var=self.vars.get('vendor'))); add('Expense type label', ttk.Entry(frm, textvariable=self.vars['expense_type_label']))
         # Org alias per EXPENSE: most spend is coded and filed without ever becoming a report, and it is
         # usually the same alias with the occasional exception, so it belongs here as well as on the report.
         self.vars['oracle_alias']=tk.StringVar(value=q(data.get('oracle_alias','')))
@@ -1567,7 +1745,7 @@ class TemplateEditor(tk.Toplevel):
             if f in TEMPLATE_BOOL_FIELDS:
                 ttk.Checkbutton(frm,text=label,variable=self.vars[f]).grid(row=row,column=1,sticky='w',pady=1); row+=1; continue
             ttk.Label(frm,text=label+(' *' if f=='vendor' else '')).grid(row=row,column=0,sticky='w',pady=2)
-            if f=='expense_type_code': CodePicker(frm, self.vars['expense_type_code'], self.vars['expense_type_label']).grid(row=row,column=1,sticky='ew',pady=2)
+            if f=='expense_type_code': CodePicker(frm, self.vars['expense_type_code'], self.vars['expense_type_label'], vendor_var=self.vars.get('vendor')).grid(row=row,column=1,sticky='ew',pady=2)
             else: ttk.Entry(frm,textvariable=self.vars[f]).grid(row=row,column=1,sticky='ew',pady=2)
             row+=1
         fit_to_screen(self, min_w=520, min_h=480)
@@ -2221,7 +2399,7 @@ class App(tk.Tk):
                'Open Receipt/Invoice':'Open the file attached to the selected expense.',
                'Delete':'Delete the selection (asks for confirmation first).',
                'Open Concur':'Open SAP Concur in your browser to do the real filing.',
-               'Ask for Receipts':'Turn the ticked expenses into a plain-text list you can paste into an email. With nothing ticked it offers the ones marked NEEDED.',
+               'Ask for Receipts':'Turn the ticked expenses (or a selected report) into a plain-text list you can paste into an email. With nothing selected it offers the ones marked NEEDED.',
                'More ▾':'Everything else: glossaries, copy helpers, folders, import/export, settings.'}
         toolbar=[('Quick Add',self.quick_add),('New Report',self.new_report),None,
                  ('Edit',self.edit),('Attach File',self.attach_selected),('Mark Filed',self.mark_filed),None,
@@ -2518,8 +2696,9 @@ class App(tk.Tk):
         self.flash_status(f"{len(ids)} receipt{'' if len(ids)==1 else 's'} selected" if ids else 'No receipts are owed')
         return ids
     def request_receipts(self):
-        """Ticked expenses -> a plain-text list to paste into an email. Nothing ticked = offer the owed ones."""
-        ids=self.selected_expense_ids()
+        """Ticked expenses (or a selected report's expenses) -> a plain-text list to paste into an email.
+        Nothing selected = offer the owed ones."""
+        ids=self.scoped_expense_ids()
         if not ids:
             owed=self.needed_receipt_ids()
             if not owed: messagebox.showinfo('Ask for Receipts','Nothing is waiting on a receipt right now.',parent=self); return
@@ -2533,6 +2712,31 @@ class App(tk.Tk):
     def selected_expense_ids(self):
         """Every EXPENSE row currently selected (multi-select via Ctrl/Shift-click). Report rows are ignored."""
         return [int(iid[1:]) for iid in self.tree.selection() if iid.startswith('E')]
+    def selected_report_ids(self):
+        """Every REPORT row currently selected."""
+        return [int(iid[1:]) for iid in self.tree.selection() if iid.startswith('R')]
+    def scoped_expense_ids(self):
+        """The expenses a batch action should touch, given what's selected: the ticked expense rows
+        PLUS every expense inside any selected REPORT. Selecting a report therefore means 'act on
+        everything in this report' — the action fans out to its expenses WITHOUT ticking each child
+        box (that would just be a noisy select-all). De-duplicated; a report's members follow it."""
+        ids=[]
+        for iid in self.tree.selection():
+            if iid.startswith('R'):
+                ids += [r['id'] for r in S.rows('SELECT id FROM expenses WHERE report_id=? ORDER BY transaction_date DESC',(int(iid[1:]),))]
+            elif iid.startswith('E'):
+                ids.append(int(iid[1:]))
+        seen=set(); out=[]
+        for i in ids:
+            if i not in seen: seen.add(i); out.append(i)
+        return out
+    def _report_scope_label(self):
+        """A short ' from report …' / ' from N reports' suffix for feedback, when the action's scope
+        came from selecting report row(s) rather than individual expenses. '' when no report is selected."""
+        reps=self.selected_report_ids()
+        if not reps: return ''
+        if len(reps)==1: return f" from report {S.scalar('SELECT name FROM reports WHERE id=?',(reps[0],)) or ''}".rstrip()
+        return f" from {len(reps)} reports"
     def assign_report(self):
         ids=self.selected_expense_ids()
         if not ids: messagebox.showinfo('Assign to Report','Select one or more expenses first.'); return
@@ -2731,13 +2935,16 @@ class App(tk.Tk):
         current user. Keys under concur_fields/concur_checkboxes are Concur's own field names
         (the extension matches them to data-nuiexp selectors); manual_fields is the human checklist
         (comboboxes and per-type fields the MVP doesn't auto-fill)."""
-        ids=self.selected_expense_ids()
+        # Selecting a report exports everything inside it (scoped_expense_ids fans the report out to its
+        # expenses); selecting expenses exports just those; selecting nothing falls back to Ready-to-file.
+        ids=self.scoped_expense_ids()
         rows=[S.row('SELECT * FROM expenses WHERE id=?',(i,)) for i in ids] if ids \
             else S.rows("SELECT * FROM expenses WHERE user_id=? AND status='Ready to file' ORDER BY transaction_date",(self.current_user_id(),))
         rows=[r for r in rows if r]
         if not rows:
-            messagebox.showinfo('Export for Autofill','Select one or more expenses first (or mark some "Ready to file").'); return
-        p=filedialog.asksaveasfilename(defaultextension='.json', initialfile='staged_expenses.json',
+            messagebox.showinfo('Export for Autofill','Select one or more expenses, or a report, first (or mark some "Ready to file").'); return
+        total=sum(float(r['amount'] or 0) for r in rows)
+        p=filedialog.asksaveasfilename(defaultextension='.json', initialfile=autofill_filename(len(rows), total),
                                        filetypes=[('JSON','*.json')], title='Export staged expenses for the autofill extension')
         if not p: return
         def us_date(iso):
@@ -2776,7 +2983,7 @@ class App(tk.Tk):
         with open(p,'w',encoding='utf-8') as f:
             json.dump({'generated': datetime.now().isoformat(timespec='seconds'), 'app_version': APP_VERSION,
                        'expenses': out}, f, indent=2)
-        self.flash_status(f'Exported {len(out)} expense(s) for autofill')
+        self.flash_status(f'Exported {len(out)} expense(s){self._report_scope_label()} for autofill')
     def export_config(self):
         p=filedialog.asksaveasfilename(defaultextension='.json',filetypes=[('JSON','*.json')], title='Export config (users, codes, vendors — no expenses)')
         if not p: return
