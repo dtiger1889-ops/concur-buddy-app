@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.27.2
+Concur Buddy — version 2026.08.27.3
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,11 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
 
+2026.08.27.3 — receipt filenames stay correct, and the long text boxes are finally readable. If you attach a
+receipt before you know the vendor or amount (common when the card charge lands a day or two later), saving
+the expense now RENAMES the file on disk to match — so it always reads `date vendor amount`, and the
+OCR-to-autofill flow can find it. And the Comment / Loose notes / Attendees / OCR boxes each got a scrollbar
+and word wrap and now grow when you enlarge the window, instead of showing a two-line sliver.
 2026.08.27.2 — OCR now works on phone-photo receipts, and you can open an attached file from the expense
 window. Many phones save JPEGs inside a multi-picture (MPO) container, and the OCR engine was refusing those
 with an "unsupported image format" error even when Tesseract was installed; each image is now normalized

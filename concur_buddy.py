@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.27.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.27.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -482,6 +482,15 @@ def open_attachment(path):
     path=resolve_attachment(path)
     if not Path(path).exists(): messagebox.showinfo("Not found", f"File no longer exists:\n{path}"); return
     open_path(path)
+def scrolled_text(parent, height):
+    """A word-wrapped multi-line text box with its own vertical scrollbar, in a frame that stretches to fill
+    its grid cell. Returns (frame, text) — grid the frame with sticky='nsew' and give its row weight so the
+    box grows with the window. Fixes the "only a sliver visible" detail panes (comment/notes/attendees/OCR)."""
+    f=ttk.Frame(parent); f.columnconfigure(0, weight=1); f.rowconfigure(0, weight=1)
+    t=tk.Text(f, height=height, width=1, wrap='word'); t.grid(row=0, column=0, sticky='nsew')
+    sb=ttk.Scrollbar(f, orient='vertical', command=t.yview); sb.grid(row=0, column=1, sticky='ns')
+    t.configure(yscrollcommand=sb.set)
+    return f, t
 def work_area():
     """The usable desktop rectangle EXCLUDING the taskbar (Windows SPI_GETWORKAREA), as (x, y, w, h).
     winfo_screenheight() ignores the taskbar, which is why a near-full-height dialog tucks under it."""
@@ -1376,8 +1385,12 @@ class ExpenseDialog(tk.Toplevel):
         for fld,label in [('business_purpose','Business purpose'),('business_name','Business name'),('city','City'),('state','State'),('country','Country')]: add(label, ttk.Entry(frm, textvariable=v(fld, 'US' if fld=='country' else '')))
         add('Payment type', ttk.Combobox(frm, textvariable=v('payment_type',PAYMENT_TYPES[0]), values=PAYMENT_TYPES))
         for fld,label in [('is_vendor_invoice','Is this a vendor invoice?'),('personal_no_reimburse','Personal expense / do not reimburse'),('missing_receipt_ack','Missing receipt acknowledgement attached')]: ttk.Checkbutton(frm,text=label,variable=b(fld)).grid(row=row,column=1,sticky='w',pady=1); row+=1
-        for fld,label,h in [('comment','Comment',2),('loose_notes','Loose notes',2),('attendees','Attendees',2),('ocr_text','OCR / extracted text',3)]:
-            ttk.Label(frm,text=label).grid(row=row,column=0,sticky='nw'); t=tk.Text(frm,height=h); t.insert('1.0', q(data.get(fld,''))); t.grid(row=row,column=1,sticky='ew',pady=3); self.vars[fld]=t; row+=1
+        # Comment / Loose notes / Attendees / OCR are multi-line: each gets its own scrollbar + word wrap, and
+        # its row is weighted so the box grows when you enlarge the window (OCR text is longest, so it grows most).
+        for fld,label,h,wt in [('comment','Comment',3,1),('loose_notes','Loose notes',3,1),('attendees','Attendees',4,1),('ocr_text','OCR / extracted text',6,2)]:
+            ttk.Label(frm,text=label).grid(row=row,column=0,sticky='nw',pady=3)
+            box,t=scrolled_text(frm,h); box.grid(row=row,column=1,sticky='nsew',pady=3); frm.rowconfigure(row, weight=wt)
+            t.insert('1.0', q(data.get(fld,''))); self.vars[fld]=t; row+=1
             if fld=='attendees':  # address book button sits directly UNDER the attendees box, not out in a 3rd column (which widened the form)
                 ab_btn=ttk.Button(frm,text='Address book…',command=self.pick_attendees); ab_btn.grid(row=row,column=1,sticky='w',pady=(0,4)); row+=1
                 Tooltip(ab_btn, 'Pick attendees you have used before (or paste new ones in), then export the file '
@@ -1471,6 +1484,7 @@ class ExpenseDialog(tk.Toplevel):
         v=self.vars[name]; return v.get('1.0','end').strip() if isinstance(v, tk.Text) else v.get()
     def save(self, close=True):
         if not self.txt('vendor').strip(): messagebox.showwarning('Required','Vendor name is required.', parent=self); return False
+        self._rename_organized_files()  # keep the organized receipt/invoice filename in sync with vendor/amount/date
         keys=['transaction_date','vendor','amount','amount_after_fee','currency','status','expense_type_code','expense_type_label','business_purpose','business_name','city','state','country','payment_type','oracle_alias','comment','loose_notes','attendees','receipt_path','invoice_path','invoice_number','ocr_text']
         vals={k:self.txt(k) for k in keys}; vals.update({k:self.vars[k].get() for k in ['is_vendor_invoice','personal_no_reimburse','missing_receipt_ack']}); vals['user_id']=self.user_map[self.user_var.get()]
         for nk in ('amount','amount_after_fee'): vals[nk]=float(clean_number(vals.get(nk)))  # store numbers, never '1,405.00'
@@ -1482,18 +1496,45 @@ class ExpenseDialog(tk.Toplevel):
         self.master.refresh()
         if close: self.destroy()
         return True
+    def organized_root(self):
+        """The folder an attachment for THIS expense files into: the user's own receipt folder\\Year, or the
+        shared receipt root\\User\\Year. Filesystem path — machine-specific, and may not exist yet."""
+        year=(self.vars['transaction_date'].get() or today())[:4]
+        user_root=S.scalar('SELECT receipt_root FROM users WHERE id=?', (self.user_map[self.user_var.get()],))
+        return (Path(user_root) / year) if user_root else (Path(get_local_setting('receipt_root')) / safe_filename(self.user_var.get()) / year)
+    def organized_name(self, doc, ext, exclude=None):
+        """Collision-safe organized path `date vendor amount [Receipt|Invoice].ext` from the CURRENT form
+        fields. `exclude` (a path) is not counted as a collision, so a file can keep its own slot on rename."""
+        root=self.organized_root(); root.mkdir(parents=True, exist_ok=True)
+        base=f"{self.vars['transaction_date'].get()} {safe_filename(self.vars['vendor'].get())} {money_part(self.vars['amount'].get())} {doc}"
+        ex=Path(exclude).resolve() if exclude else None
+        dest=root/f"{base}{ext}"; i=2
+        while dest.exists() and dest.resolve()!=ex: dest=root/f"{base} ({i}){ext}"; i+=1
+        return dest
+    def _rename_organized_files(self):
+        """On save, re-derive each attached file's name from the current date/vendor/amount and rename it to
+        match. This is the fix for attaching a receipt BEFORE the vendor/amount is known (common: the card feed
+        supplies the real vendor a day or two later) — otherwise the file keeps its blank-vendor / 0.00 name and
+        the OCR->autofill pipeline can't find it. Best-effort: any problem (unreachable receipt root, file
+        already moved) leaves the file and stored path untouched and NEVER blocks the save."""
+        for doc, fld in (('Receipt','receipt_path'), ('Invoice','invoice_path')):
+            stored=self.vars[fld].get().strip()
+            if not stored: continue
+            try:
+                cur=resolve_attachment(stored)
+                if not (cur and os.path.exists(cur)): continue
+                dest=self.organized_name(doc, Path(cur).suffix, exclude=cur)
+                if Path(cur).resolve()==dest.resolve(): continue  # already named right
+                shutil.move(cur, dest)
+                self.vars[fld].set(str(dest))
+            except Exception:
+                pass  # a rename is a nicety; the DB save must always go through
     def attach(self, doc):
         _inbox=get_local_setting('inbox_path'); _initial=_inbox if (_inbox and Path(_inbox).exists()) else str(Path.home())
         p=filedialog.askopenfilename(initialdir=_initial, title=f'Select {doc.lower()}')
         if not p: return
-        year=(self.vars['transaction_date'].get() or today())[:4]
-        user_root=S.scalar('SELECT receipt_root FROM users WHERE id=?', (self.user_map[self.user_var.get()],))
-        # A user with their own chosen save folder files straight under it\Year; otherwise use the shared root\User\Year.
-        root=(Path(user_root) / year) if user_root else (Path(get_local_setting('receipt_root')) / safe_filename(self.user_var.get()) / year)
         try:
-            root.mkdir(parents=True, exist_ok=True)
-            ext=Path(p).suffix; dest=root / f"{self.vars['transaction_date'].get()} {safe_filename(self.vars['vendor'].get())} {money_part(self.vars['amount'].get())} {doc}{ext}"; i=2
-            while dest.exists(): dest=root/f"{dest.stem} ({i}){ext}"; i+=1
+            ext=Path(p).suffix; dest=self.organized_name(doc, ext)
             inbox=get_local_setting('inbox_path')
             if is_within(p, inbox):  # came from the inbox -> move it out entirely (copy+rename then drop original)
                 shutil.move(p, dest)
@@ -1503,7 +1544,7 @@ class ExpenseDialog(tk.Toplevel):
             # Most often the Receipt root is unset/unreachable on THIS machine — tell the user where to fix it
             # instead of silently doing nothing (the old behavior swallowed the error in the button callback).
             messagebox.showerror('Could not save the receipt',
-                f"Couldn't file the {doc.lower()} under:\n{root}\n\n{type(e).__name__}: {e}\n\n"
+                f"Couldn't file the {doc.lower()} under:\n{self.organized_root()}\n\n{type(e).__name__}: {e}\n\n"
                 f"Fix your Receipt root in Settings (it must be a folder that exists on THIS computer — "
                 f"e.g. your Google Drive receipts folder on this machine).", parent=self)
             return
