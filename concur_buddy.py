@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.27.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.27.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -475,6 +475,13 @@ def open_file_location(path):
         elif sys.platform == 'darwin': subprocess.Popen(['open', '-R', str(p)])
         else: open_path(str(p.parent))
     except Exception as e: messagebox.showerror("Open failed", str(e))
+def open_attachment(path):
+    """Open an attached file ITSELF (in the OS default viewer), re-anchored to this machine's receipt root.
+    Same friendly empty/missing handling as open_file_location, which opens the containing folder instead."""
+    if not path: messagebox.showinfo("No file", "No file is attached."); return
+    path=resolve_attachment(path)
+    if not Path(path).exists(): messagebox.showinfo("Not found", f"File no longer exists:\n{path}"); return
+    open_path(path)
 def work_area():
     """The usable desktop rectangle EXCLUDING the taskbar (Windows SPI_GETWORKAREA), as (x, y, w, h).
     winfo_screenheight() ignores the taskbar, which is why a near-full-height dialog tucks under it."""
@@ -1324,7 +1331,8 @@ class ExpenseDialog(tk.Toplevel):
         for txt,cmd in [('Save',self.save),('Attach Receipt',lambda:self.attach('Receipt')),('Attach Invoice',lambda:self.attach('Invoice')),
                         ('Detach Receipt',lambda:self.detach('Receipt')),('Detach Invoice',lambda:self.detach('Invoice')),
                         ('OCR Receipt',lambda:self.ocr('receipt_path')),('OCR Invoice',lambda:self.ocr('invoice_path')),
-                        ('Open Receipt Loc',lambda:open_file_location(self.vars['receipt_path'].get())),('Open Invoice Loc',lambda:open_file_location(self.vars['invoice_path'].get())),
+                        ('Open Receipt',lambda:open_attachment(self.vars['receipt_path'].get())),('Open Receipt Loc',lambda:open_file_location(self.vars['receipt_path'].get())),
+                        ('Open Invoice',lambda:open_attachment(self.vars['invoice_path'].get())),('Open Invoice Loc',lambda:open_file_location(self.vars['invoice_path'].get())),
                         ('Mark Ready',lambda:self.vars['status'].set('Ready to file')),('Copy to New',self.copy_to_new),('Save as Template',self.save_as_template),('Close',self.close)]:
             btn.button(txt,cmd)
         # Live "what Concur will require" hints — passive, never blocks a save (Concur enforces; we just warn).
@@ -1543,9 +1551,23 @@ class ExpenseDialog(tk.Toplevel):
             if not text:
                 try:
                     import pytesseract
-                    from PIL import Image
-                    text=pytesseract.image_to_string(Image.open(p))
-                except Exception as e: text=f"OCR unavailable. Install Tesseract for Windows and pytesseract. Details: {e}"
+                    from PIL import Image, ImageOps
+                    # Normalize before OCR: exif_transpose honors phone-photo rotation, and convert('L')
+                    # grayscales it (better for OCR) AND clears PIL's detected .format. That format reset is
+                    # the fix for phone JPEGs PIL reports as MPO (multi-picture) or other: pytesseract only
+                    # accepts a fixed format whitelist and otherwise raises "Unsupported image format/type",
+                    # even with Tesseract correctly installed.
+                    text=pytesseract.image_to_string(ImageOps.exif_transpose(Image.open(p)).convert('L'))
+                except ImportError:
+                    text="OCR needs the pytesseract + Pillow packages installed (see README setup)."
+                except Exception as e:
+                    # A missing Tesseract binary arrives as pytesseract.TesseractNotFoundError; anything else
+                    # (an image that still can't be read) lands here too. Report the real reason instead of
+                    # telling the user to install something they already have.
+                    if e.__class__.__name__=='TesseractNotFoundError':
+                        text="OCR needs the Tesseract program. Install Tesseract for Windows (see README) and restart Concur Buddy."
+                    else:
+                        text=f"Couldn't read text from this file: {e}"
         except Exception as e: text=f"Text extraction failed: {e}"
         self.vars['ocr_text'].delete('1.0','end'); self.vars['ocr_text'].insert('1.0', text)
         self.detect_payment_card(text)

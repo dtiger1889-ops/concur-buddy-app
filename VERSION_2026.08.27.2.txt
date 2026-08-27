@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.27.1
+Concur Buddy — version 2026.08.27.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,13 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
 
+2026.08.27.2 — OCR now works on phone-photo receipts, and you can open an attached file from the expense
+window. Many phones save JPEGs inside a multi-picture (MPO) container, and the OCR engine was refusing those
+with an "unsupported image format" error even when Tesseract was installed; each image is now normalized
+(rotation-corrected + converted to grayscale) before OCR, which also straightens sideways photos and improves
+results. The failure message no longer tells you to install Tesseract when the real problem is the image. And
+the expense window gained **Open Receipt** / **Open Invoice** buttons that open the file itself, next to the
+existing buttons that open its containing folder — matching the main list.
 2026.08.27.1 — smaller quality-of-life batch. The expense list now shows the expense-type NAME (the
 human-readable label) instead of the bare GL number, and its type filter searches both the number and the
 name. The Address book button moved directly under the Attendees box, so opening an expense no longer
