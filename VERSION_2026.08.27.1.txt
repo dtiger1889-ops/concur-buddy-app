@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.20.1
+Concur Buddy — version 2026.08.27.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,12 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
 
+2026.08.27.1 — smaller quality-of-life batch. The expense list now shows the expense-type NAME (the
+human-readable label) instead of the bare GL number, and its type filter searches both the number and the
+name. The Address book button moved directly under the Attendees box, so opening an expense no longer
+widens the form to make room for it. And recurring vendors can be pre-loaded so they autocomplete and show
+in the Vendor glossary without being typed by hand — the app still learns each vendor's usual expense code
+the first time you file with it.
 2026.08.20.1 — the expense-type picker finally FINDS things. Type an everyday word ("clothing", "swag",
 "taxi", "flight") and it reaches the institutional expense-type name your org uses (a promotion-, uniform-,
 transportation- or airfare-type line): it now searches code + name + tags + notes together, in any word

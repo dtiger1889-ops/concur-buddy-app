@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.20.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.27.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -294,6 +294,10 @@ TEMPLATE_SEED = [
     ('Doodle subscription', {'vendor': 'Doodle', 'business_purpose': 'Productivity software', 'payment_type': PAYMENT_TYPES[0]}),
     ('Staples office supplies', {'vendor': 'Staples', 'business_purpose': 'Office supplies', 'payment_type': PAYMENT_TYPES[0]}),
 ]
+# Recurring vendors pre-loaded on first run so they autocomplete and appear in the Vendor glossary without
+# being typed by hand. Name only — the app learns each vendor's usual expense code the first time you file
+# with it. (The public build ships this list empty; add your own recurring vendors here or in the glossary.)
+VENDOR_SEED = []
 APPDATA_ROOT = Path(os.getenv("APPDATA", str(Path.home())))
 APP_DIR = APPDATA_ROOT / "ConcurBuddy"
 LEGACY_APP_DIR = APPDATA_ROOT / "ExpenseStager"
@@ -708,6 +712,13 @@ class Store:
                     self.execute('INSERT INTO templates(name,vendor,fields,is_default) VALUES(?,?,?,1)', (name, fields.get('vendor',''), json.dumps(fields)))
         if self.get_setting('seed_templates_v2') is None:
             self.set_setting('seed_templates_v2', '1')
+        # One-time seed of known recurring vendors, so they exist (and autocomplete) even in a DB created
+        # before this list. Guarded by a flag so a vendor the user later deletes stays gone — same contract
+        # as the template seed above.
+        if self.get_setting('seed_vendors_v1') is None:
+            for vname in VENDOR_SEED:
+                self.execute('INSERT OR IGNORE INTO vendors(name) VALUES(?)', (vname,))
+            self.set_setting('seed_vendors_v1', '1')
         for k,v in [('inbox_path', str(Path.home()/ 'Downloads')), ('receipt_root', str(Path.home()/ 'Documents' / 'Expense Receipts'))]:
             if self.get_setting(k) is None: self.set_setting(k,v)
         for code,name,notes in ORACLE_SEED:
@@ -1358,13 +1369,11 @@ class ExpenseDialog(tk.Toplevel):
         add('Payment type', ttk.Combobox(frm, textvariable=v('payment_type',PAYMENT_TYPES[0]), values=PAYMENT_TYPES))
         for fld,label in [('is_vendor_invoice','Is this a vendor invoice?'),('personal_no_reimburse','Personal expense / do not reimburse'),('missing_receipt_ack','Missing receipt acknowledgement attached')]: ttk.Checkbutton(frm,text=label,variable=b(fld)).grid(row=row,column=1,sticky='w',pady=1); row+=1
         for fld,label,h in [('comment','Comment',2),('loose_notes','Loose notes',2),('attendees','Attendees',2),('ocr_text','OCR / extracted text',3)]:
-            ttk.Label(frm,text=label).grid(row=row,column=0,sticky='nw'); t=tk.Text(frm,height=h); t.insert('1.0', q(data.get(fld,''))); t.grid(row=row,column=1,sticky='ew',pady=3); self.vars[fld]=t
-            if fld=='attendees':  # the address book knows these people; typing them again by hand is the old way
-                ab=ttk.Frame(frm); ab.grid(row=row,column=2,sticky='nw',padx=(4,0))
-                ab_btn=ttk.Button(ab,text='Address book…',width=15,command=self.pick_attendees); ab_btn.pack()
+            ttk.Label(frm,text=label).grid(row=row,column=0,sticky='nw'); t=tk.Text(frm,height=h); t.insert('1.0', q(data.get(fld,''))); t.grid(row=row,column=1,sticky='ew',pady=3); self.vars[fld]=t; row+=1
+            if fld=='attendees':  # address book button sits directly UNDER the attendees box, not out in a 3rd column (which widened the form)
+                ab_btn=ttk.Button(frm,text='Address book…',command=self.pick_attendees); ab_btn.grid(row=row,column=1,sticky='w',pady=(0,4)); row+=1
                 Tooltip(ab_btn, 'Pick attendees you have used before (or paste new ones in), then export the file '
                                 'Concur\'s importer wants.')
-            row+=1
         add('Receipt path', ttk.Entry(frm, textvariable=v('receipt_path',''))); add('Invoice path', ttk.Entry(frm, textvariable=v('invoice_path','')))
         add('Invoice number', ttk.Entry(frm, textvariable=v('invoice_number','')))
         fit_to_screen(self, min_w=820, min_h=520)
@@ -2383,7 +2392,7 @@ class App(tk.Tk):
         # Row 1: filters/search only (kept short). Action buttons live in wrapping FlowBars below — never on this row.
         top=ttk.Frame(self,padding=4); top.pack(fill='x')
         ttk.Label(top,text='User').pack(side='left'); self.user_cb=ttk.Combobox(top,textvariable=self.user,state='readonly',width=14); self.user_cb.pack(side='left',padx=3); self.user_cb.bind('<<ComboboxSelected>>',lambda e:self.refresh())
-        ttk.Label(top,text='Filter').pack(side='left'); ttk.Combobox(top,textvariable=self.filter_col,values=['Any','vendor','amount','status','doc','code','purpose','date'],state='readonly',width=8).pack(side='left',padx=2); self.filter_col.trace_add('write',lambda *a:self.refresh())
+        ttk.Label(top,text='Filter').pack(side='left'); ttk.Combobox(top,textvariable=self.filter_col,values=['Any','vendor','amount','status','doc','type','purpose','date'],state='readonly',width=8).pack(side='left',padx=2); self.filter_col.trace_add('write',lambda *a:self.refresh())
         ttk.Entry(top,textvariable=self.search,width=26).pack(side='left'); self.search.trace_add('write',lambda *a:self.refresh())
         ttk.Label(top,text='Status').pack(side='left',padx=(8,0)); ttk.Combobox(top,textvariable=self.status,values=['All']+STATUSES,state='readonly',width=14).pack(side='left'); self.status.trace_add('write',lambda *a:self.refresh())
         ttk.Checkbutton(top,text='Show Filed',variable=self.show_filed,command=self.refresh).pack(side='left',padx=4)
@@ -2457,7 +2466,10 @@ class App(tk.Tk):
             self.tree.configure(style='Checkbox.Treeview')
         except Exception: pass
         self.tree.heading('#0',text='Report / Expense',image=self.chk_img[False],anchor='w',command=self.toggle_select_all)
-        for c,w in [('id',55),('date',95),('vendor',190),('amount',85),('status',120),('doc',92),('code',95),('purpose',210),('ready',60)]: self.tree.heading(c,text=c.title()); self.tree.column(c,width=w)
+        for c,w in [('id',55),('date',95),('vendor',190),('amount',85),('status',120),('doc',92),('code',170),('purpose',210),('ready',60)]: self.tree.heading(c,text=c.title()); self.tree.column(c,width=w)
+        # The 'code' column shows the human-readable expense-type LABEL (not the bare GL number, which is
+        # meaningless at a glance) — truncated by width is fine. Right-click-to-change-field is ROADMAP item 15.
+        self.tree.heading('code', text='Expense Type')
         self.tree.pack(fill='both',expand=True,padx=4,pady=4); self.tree.bind('<Double-1>',self.on_double)
         # Multi-select (Ctrl/Shift-click) + two ways to file a batch into a report: right-click menu, or drag onto a report row.
         self.menu=tk.Menu(self, tearoff=0)
@@ -2575,6 +2587,7 @@ class App(tk.Tk):
         field_map={'vendor':'vendor','amount':'amount','status':'status','code':'expense_type_code','purpose':'business_purpose','date':'transaction_date'}
         if col=='Any': hay=' '.join(q(e[k]) for k in e.keys()).lower()
         elif col=='doc': hay=self._docs(e).lower()
+        elif col=='type': hay=(q(e['expense_type_code'])+' '+q(e['expense_type_label'])).lower()  # 'Expense Type' column: filter code AND label
         else: hay=q(e[field_map.get(col,'vendor')]).lower()
         return term in hay
     @staticmethod
@@ -2585,7 +2598,7 @@ class App(tk.Tk):
         return got or ('NEEDED' if needs_receipt(e) else 'not needed')
     def insert_exp(self,parent,e):
         self.tree.insert(parent,'end',iid=f"E{e['id']}", text='[Expense] '+e['vendor'], image=self.chk_img[False],
-                         tags=('reimburse',) if reimbursement_due(e) else (('needreceipt',) if needs_receipt(e) else ()), values=(e['id'],e['transaction_date'],e['vendor'],money_part(e['amount']),e['status'],self._docs(e),e['expense_type_code'] or '',e['business_purpose'] or '','✓' if e['status'] in ('Ready to file','Filed') else ''))
+                         tags=('reimburse',) if reimbursement_due(e) else (('needreceipt',) if needs_receipt(e) else ()), values=(e['id'],e['transaction_date'],e['vendor'],money_part(e['amount']),e['status'],self._docs(e),(e['expense_type_label'] or e['expense_type_code'] or ''),e['business_purpose'] or '','✓' if e['status'] in ('Ready to file','Filed') else ''))
         self._chk_state[f"E{e['id']}"]=False
     def refresh_counter(self):
         """The home-screen counter. Deliberately NOT filtered by the search box / status dropdown — it
