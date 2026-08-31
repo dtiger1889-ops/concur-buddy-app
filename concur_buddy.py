@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.31.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.31.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -1647,7 +1647,7 @@ class ReportDialog(tk.Toplevel):
         data=dict(S.row('SELECT * FROM reports WHERE id=?',(rep_id,))) if rep_id else {}; self.vars={}; self.user_map={r['name']:r['id'] for r in S.rows('SELECT * FROM users ORDER BY name')}
         user_name=next((n for n,i in self.user_map.items() if i==data.get('user_id')), None) or next((n for n,i in self.user_map.items() if i==default_user_id), None) or list(self.user_map)[0]
         self.user_var=tk.StringVar(value=user_name)
-        btn=FlowBar(self,padding=4); btn.pack(side='bottom',fill='x'); btn.button('Save',self.save); btn.button('Oracle Codes',lambda:OracleGlossary(self.master)); btn.button('Close',self.close)
+        btn=FlowBar(self,padding=4); btn.pack(side='bottom',fill='x'); btn.button('Save',self.save); btn.button('Oracle Codes',self.pick_oracle); btn.button('Close',self.close)
         frm=ttk.Frame(self,padding=10); frm.pack(side='top',fill='both',expand=True); frm.columnconfigure(1,weight=1); row=0
         def add(label, var, values=None):
             nonlocal row; ttk.Label(frm,text=label).grid(row=row,column=0,sticky='w',pady=4); w=ttk.Combobox(frm,textvariable=var,values=values) if values else ttk.Entry(frm,textvariable=var); w.grid(row=row,column=1,sticky='ew',pady=4); row+=1
@@ -1660,6 +1660,26 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(frm,text='Oracle Alias / Code').grid(row=row,column=0,sticky='w',pady=4); OraclePicker(frm, self.vars['oracle_alias']).grid(row=row,column=1,sticky='ew',pady=4); row+=1
         fit_to_screen(self, min_w=720, min_h=500)
         self._baseline=self._snapshot(); self.protocol('WM_DELETE_WINDOW', self.close)
+    def pick_oracle(self):
+        """Open the oracle list as a PICKER and write the chosen code into this report.
+
+        Two things this has to get right, both of which the old one-liner did not:
+        it opened the glossary parented to the MAIN WINDOW with no way to return a value, so the codes
+        were there to look at and impossible to actually use; and this dialog holds a modal grab, so a
+        child window opened over it takes no clicks until the grab is handed across and back."""
+        def done(vals):
+            # (code, name, favorite, notes) — same convention as OraclePicker: the code, or the bare
+            # name for an entry that has none (e.g. "Unknown").
+            self.vars['oracle_alias'].set(q(vals[0]) or q(vals[1]))
+        try: self.grab_release()
+        except Exception: pass
+        g=OracleGlossary(self, on_pick=done)
+        g.transient(self)
+        try: g.grab_set()
+        except Exception: pass
+        self.wait_window(g)
+        try: self.grab_set()  # take the modal grab back, or the report dialog goes dead
+        except Exception: pass
     def _snapshot(self):
         out={k:v.get() for k,v in self.vars.items()}; out['_user']=self.user_var.get(); return out
     def close(self):
@@ -1677,23 +1697,42 @@ class ReportDialog(tk.Toplevel):
         self.master.refresh(); self.destroy()
 
 class ListGlossary(tk.Toplevel):
-    """Shared editor for the generated lists (expense codes, oracle codes, vendors): edit notes, toggle favorite, delete."""
-    def __init__(self, master, title, columns, load_fn, key_index, fav_col, notes_col, delete_fn):
+    """Shared editor for the generated lists (expense codes, oracle codes, vendors): edit notes, toggle favorite, delete.
+
+    With `on_pick` it is also a PICKER: opened from a form that wants one of these values, the list has to
+    hand a row back, not just let you curate it. Without it, double-click still means "edit notes" — the
+    management use (More ▾ → Glossaries) has no form to answer to."""
+    def __init__(self, master, title, columns, load_fn, key_index, fav_col, notes_col, delete_fn,
+                 on_pick=None, pick_label='Use this'):
         super().__init__(master); self.title(title); self.geometry('780x520'); self.minsize(640, 400)
         self.load_fn=load_fn; self.key_index=key_index; self.fav_col=fav_col; self.notes_col=notes_col; self.delete_fn=delete_fn; self.cols=columns
+        self.on_pick=on_pick
         top=ttk.Frame(self,padding=8); top.pack(fill='x')
         self.search=tk.StringVar(); ttk.Entry(top,textvariable=self.search).pack(side='left',fill='x',expand=True); ttk.Button(top,text='Search',command=self.refresh).pack(side='left')
         self.bar=FlowBar(self,padding=(8,2)); self.bar.pack(fill='x')
+        # In pick mode the picking action leads the bar: it is why the window was opened.
+        if on_pick: Tooltip(self.bar.button(pick_label,self.pick), 'Put the selected row into the form you came from. Double-click a row (or press Enter) does the same.')
         self.bar.button('Toggle Favorite',self.toggle_fav); self.bar.button('Edit Notes',self.edit_notes); self.bar.button('Delete',self.delete)
         self.tree=ttk.Treeview(self,columns=columns,show='headings')
         for c in columns: self.tree.heading(c,text=c.title()); self.tree.column(c,width=130)
-        self.tree.pack(fill='both',expand=True); self.tree.bind('<Double-1>', lambda e: self.edit_notes())
+        self.tree.pack(fill='both',expand=True)
+        self.tree.bind('<Double-1>', (lambda e: self.pick()) if on_pick else (lambda e: self.edit_notes()))
+        if on_pick:
+            self.bind('<Return>', lambda e: self.pick())
+            ttk.Label(self,text=f'Double-click a row (or select it and press {pick_label}) to put it into the form.',
+                      padding=(8,2),foreground='#555').pack(anchor='w',side='bottom')
         self.bind('<Escape>', lambda e: self.destroy()); self.refresh()
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
         for vals in self.load_fn(self.search.get().strip()): self.tree.insert('', 'end', values=vals)
     def _sel(self):
         item=self.tree.focus(); vals=self.tree.item(item,'values'); return vals or None
+    def pick(self):
+        """Hand the selected row back to whatever opened this, then close."""
+        vals=self._sel()
+        if not vals:
+            messagebox.showinfo('Pick a row','Select a row first.',parent=self); return
+        self.on_pick(vals); self.destroy()
     def toggle_fav(self):
         vals=self._sel()
         if not vals: return
@@ -1729,9 +1768,10 @@ class CodeGlossary(ListGlossary):
         if tags is not None: S.execute('UPDATE expense_codes SET tags=? WHERE code=? AND name=?',(tags,vals[0],vals[1])); self.refresh()
 
 class OracleGlossary(ListGlossary):
-    def __init__(self, master):
+    def __init__(self, master, on_pick=None):
         super().__init__(master, 'Oracle / Account Codes', ('code','name','favorite','notes'),
-                         load_fn=self._load, key_index=1, fav_col=2, notes_col=3, delete_fn=lambda vals: S.execute('DELETE FROM oracle_codes WHERE name=?',(vals[1],)))
+                         load_fn=self._load, key_index=1, fav_col=2, notes_col=3, delete_fn=lambda vals: S.execute('DELETE FROM oracle_codes WHERE name=?',(vals[1],)),
+                         on_pick=on_pick, pick_label='Use this code')
         self.bar.button('Add Oracle Code', self.add)
     def _load(self, term):
         t='%'+term+'%'; return [(r['code'],r['name'],'★' if r['favorite'] else '',r['notes']) for r in S.rows('SELECT * FROM oracle_codes WHERE code LIKE ? OR name LIKE ? ORDER BY favorite DESC, name',(t,t))]

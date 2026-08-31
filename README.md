@@ -263,6 +263,12 @@ The **Oracle Codes** glossary holds account/oracle codes used on reports. It com
 you type, and **grows automatically** when you enter a new code on a report. You can **Add Oracle Code** by hand,
 favorite, annotate, or delete entries.
 
+**Picking one onto a report.** Two ways, and both put the code in the report's *Oracle Alias / Code* box: the
+**▾** button beside that box lists what you already have (favourites first), or the **Oracle Codes** button at
+the bottom of the report opens the full list — double-click a row, or select it and press **Use this code**.
+An entry with no number (like *Unknown*) hands back its name. Opening the same list from **More ▾ → Glossaries
+→ Oracle Codes…** is the *curating* view instead: there is no report to answer to, so double-click edits notes.
+
 ### Vendors & templates
 The **Vendors** glossary remembers every vendor you've used and the **last expense code** you applied to it. The
 next time you type that vendor into an expense, the app **auto-fills that code** for you (if you haven't already

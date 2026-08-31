@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.31.1
+Concur Buddy — version 2026.08.31.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,14 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.31.2 — FIXES the Oracle Codes list on a report: you can now actually pick one. Opening an expense
+report and clicking **Oracle Codes** showed the list but every row was inert — nothing you clicked went into
+the report's *Oracle Alias / Code* box, so the button was only good for reading. Now double-click a row (or
+select it and press **Use this code**, or press Enter) and it drops straight into the report. Picking an
+entry that has no number, like "Unknown", puts its name in, which is what the ▾ box beside the field already
+did. Nothing changed about the same list opened from **More ▾ → Glossaries → Oracle Codes…** — that one is
+for curating the list, so double-click still edits notes.
 
 2026.08.31.1 — picking a report, and reading the Concur import. The "Assign to Report" list was a flat
 A-Z run of every report you have ever made, filed ones included, so the two or three you can actually still
