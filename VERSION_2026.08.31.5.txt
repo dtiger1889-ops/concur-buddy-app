@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.31.4
+Concur Buddy — version 2026.08.31.5
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,15 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.31.5 — FIXES the ▾ button beside the Vendor field, which shut the list again the moment after you
+pressed it. Clicking the button moves focus off the text box, and the list was being closed whenever the
+text box lost focus unless the click had landed in the list itself — so opening it from the button always
+counted as "focus went somewhere else" and it closed about a sixth of a second later. The list now stays
+open while anything in the field still has focus (the box, the button, or the list) and closes only when
+you move away properly. Pressing ▾ a second time now closes the list, the way a dropdown button should.
+Also stops a closing expense window leaving a stray timer behind, which Windows logged as a background
+error.
 
 2026.08.31.4 — three roadmap features. **Open Concur now opens CHROME**, not whatever your default browser
 is: the autofill extension is a Chrome extension, so opening Concur anywhere else got you a Concur tab with

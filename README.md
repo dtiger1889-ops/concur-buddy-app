@@ -289,7 +289,7 @@ want (they stay gone), or add your own. Every template requires a **vendor**.
 
 **Vendor type-ahead.** The **Vendor** field suggests vendors you have used before as you type — favourites
 first, then the ones you filed most recently — showing each one's remembered expense code beside it. Click the
-**▾** to browse without typing. Picking one fills the vendor and its usual expense code. **Esc** closes the
+**▾** to browse without typing (and again to close it). Picking one fills the vendor and its usual expense code. **Esc** closes the
 suggestion list without closing the expense.
 
 **Paging between expenses.** **◀** / **▶** at the bottom of the expense window step through the list *exactly

@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.31.4"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.31.5"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -1356,6 +1356,11 @@ class VendorPicker(ttk.Frame):
         self.entry.bind('<Down>', self._into_list)
         self.entry.bind('<Escape>', self._escape)
         self.entry.bind('<FocusOut>', self._maybe_hide, add='+')
+        # A pending deferred hide MUST die with the widget: closing the dialog within 150ms of a
+        # focus-out otherwise leaves Tk holding a callback whose command no longer exists, and it
+        # logs `invalid command name "...<lambda>"` from the event loop.
+        self._hide_job=None
+        self.bind('<Destroy>', self._cancel_hide)
     # ---- data -------------------------------------------------------------------------------
     def _matches(self, term):
         return S.rows("SELECT v.name, v.favorite, v.last_code, v.last_label, "
@@ -1390,6 +1395,8 @@ class VendorPicker(ttk.Frame):
         term=self.value_var.get().strip()
         self._fill(self._matches(term)) if term else self.hide()
     def show_all(self):
+        # A dropdown button toggles: pressing ▾ again with the list open should shut it, not rebuild it.
+        if self.visible(): self.hide(); self.entry.focus_set(); return
         self.entry.focus_set(); self._fill(self._matches(''))
     def _into_list(self, e=None):
         if not self.visible(): return
@@ -1398,9 +1405,33 @@ class VendorPicker(ttk.Frame):
     def _escape(self, e=None):
         # Only swallow Esc when the list is actually open, so Esc still closes the dialog otherwise.
         if self.visible(): self.hide(); return 'break'
+    def _owns(self, w):
+        """True when `w` is part of this picker — the entry, the ▾ button, or the floating list."""
+        if w is None: return False          # focus left the app entirely; not our business
+        if w is self.lb or w is self.entry: return True
+        me=str(self); wp=str(w)
+        return wp==me or wp.startswith(me+'.')
     def _maybe_hide(self, e=None):
-        # Clicking a suggestion fires FocusOut on the entry first; defer so the click still lands.
-        self.after(150, lambda: None if (self.focus_get() is self.lb) else self.hide())
+        """Close the list only once focus has left the picker ALTOGETHER.
+
+        Deferred because clicking a suggestion (or the ▾ button) fires the entry's FocusOut first, so an
+        immediate hide would kill the click. And the test is "does anything in this picker still have
+        focus", not "is the listbox focused": while the list is open the caret normally sits in the ENTRY,
+        so the narrower test closed the list ~150ms after ▾ opened it — reported from live use 2026-08-31
+        as the dropdown shutting instantly."""
+        self._cancel_hide()
+        self._hide_job=self.after(150, self._hide_if_unfocused)
+    def _hide_if_unfocused(self):
+        self._hide_job=None
+        try:
+            if not self.winfo_exists(): return
+        except Exception: return
+        if not self._owns(self.focus_get()): self.hide()
+    def _cancel_hide(self, e=None):
+        if getattr(self, '_hide_job', None):
+            try: self.after_cancel(self._hide_job)
+            except Exception: pass
+            self._hide_job=None
     def pick(self, e=None):
         sel=self.lb.curselection()
         if not sel: return
