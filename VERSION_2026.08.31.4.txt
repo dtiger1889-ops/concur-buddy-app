@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.31.3
+Concur Buddy — version 2026.08.31.4
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,19 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.31.4 — three roadmap features. **Open Concur now opens CHROME**, not whatever your default browser
+is: the autofill extension is a Chrome extension, so opening Concur anywhere else got you a Concur tab with
+none of the autofill this app feeds it. If Chrome genuinely isn't installed it still opens your default
+browser and says so, rather than failing quietly. **The Vendor field searches as you type.** Vendors you have
+used before now suggest themselves right on the field — favourites first, then the ones you filed most
+recently — with each one's remembered expense code shown beside it, so a repeat expense no longer means
+retyping a name exactly or accidentally creating a second near-identical vendor. Click ▾ to see the list
+without typing; Esc closes the list without closing the expense. **And you can page between expenses without
+closing the window:** ◀ / ▶ at the bottom of the expense window step through the list exactly as it is on
+screen — same order, same search box, same status filter, report contents included — with a "3 of 12"
+counter. The arrows grey out at each end rather than looping round, and if you have unsaved edits you get
+the usual Save / Discard / Cancel question before moving off.
 
 2026.08.31.3 — the two oldest known bugs, both fixed. **Cancelling an expense no longer strands your
 receipt.** Attaching a file organizes it onto disk straight away (it has to — that is what the OCR and Open

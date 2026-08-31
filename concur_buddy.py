@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.31.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.31.4"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -440,6 +440,36 @@ def open_folder(path, label='folder'):
             except Exception as e: messagebox.showerror("Couldn't create folder", str(e)); return
         else: return
     open_path(str(p))
+def find_chrome():
+    """Absolute path to Chrome, or None. Checked in the order a Windows box actually installs it:
+    per-machine (both bitnesses), then per-user, then whatever is on PATH."""
+    cands=[os.path.join(os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+           os.path.join(os.environ.get('PROGRAMFILES(X86)', r'C:\Program Files (x86)'), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+           os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Google', 'Chrome', 'Application', 'chrome.exe')]
+    for c in cands:
+        if c and os.path.isfile(c): return c
+    return shutil.which('chrome') or shutil.which('google-chrome') or shutil.which('chromium')
+
+def open_concur(status=None):
+    """Open Concur in CHROME specifically, not the OS default browser.
+
+    The autofill extension is a Chrome extension. Opening Concur in Edge/Firefox gets you a Concur tab
+    with none of the autofill this app exists to feed, which looks like the extension being broken. So
+    launch Chrome by path, and fall back to the default browser only when Chrome genuinely isn't there —
+    saying so, because a silent fallback is exactly the confusing case.
+    `status` is an optional one-line reporter (App.flash_status)."""
+    chrome=find_chrome()
+    if chrome:
+        try:
+            subprocess.Popen([chrome, CONCUR_URL])
+            if status: status('Opening Concur in Chrome')
+            return True
+        except Exception:
+            pass  # fall through to the default browser rather than leaving the click dead
+    webbrowser.open(CONCUR_URL)
+    if status: status('Chrome not found — opened your default browser (the autofill extension is Chrome-only)')
+    return False
+
 def _path_parts(s):
     """Split a stored path into components regardless of separator or drive prefix."""
     return [c for c in re.split(r'[\\/]+', str(s)) if c and not c.endswith(':')]
@@ -1300,6 +1330,83 @@ class OraclePicker(ttk.Frame):
         val=self.lb.get(sel[0]); code=val.split(' — ')[0] if ' — ' in val else ''
         self.value_var.set(code or val); self.lb.pack_forget()
 
+class VendorPicker(ttk.Frame):
+    """Type-ahead on the Vendor field itself.
+
+    The field used to be a bare Entry: vendor search existed only in the separate Vendor Glossary window,
+    so logging a repeat expense meant retyping a name you had already used a dozen times, exactly right,
+    or silently creating a near-duplicate vendor ("Amazon" vs "Amazon.com").
+
+    Ordering is favourites, then genuinely RECENT — `vendors` has no timestamp, so recency comes from the
+    latest expense actually filed against each name. No schema change, and it reflects real use rather than
+    when the row happened to be created.
+
+    The list FLOATS (`place`) rather than occupying a layout row. Vendor sits near the top of a long form,
+    and a list that reflowed would shove every field below it down on each keystroke."""
+    ROWS = 6
+    def __init__(self, master, value_var, on_pick=None):
+        super().__init__(master)
+        self.value_var=value_var; self.on_pick=on_pick; self._names=[]
+        self.entry=ttk.Entry(self, textvariable=value_var); self.entry.pack(side='left', fill='x', expand=True)
+        b=ttk.Button(self, text='▾', width=3, command=self.show_all); b.pack(side='left')
+        Tooltip(b, 'Vendors you have used before — favourites first, then most recently used.')
+        self.lb=tk.Listbox(self.winfo_toplevel(), height=self.ROWS, exportselection=False)
+        self.lb.bind('<<ListboxSelect>>', self.pick); self.lb.bind('<Return>', self.pick)
+        self.entry.bind('<KeyRelease>', self._typed)
+        self.entry.bind('<Down>', self._into_list)
+        self.entry.bind('<Escape>', self._escape)
+        self.entry.bind('<FocusOut>', self._maybe_hide, add='+')
+    # ---- data -------------------------------------------------------------------------------
+    def _matches(self, term):
+        return S.rows("SELECT v.name, v.favorite, v.last_code, v.last_label, "
+                      "(SELECT MAX(e.created_at) FROM expenses e WHERE e.vendor=v.name) AS last_used "
+                      "FROM vendors v WHERE v.name LIKE ? "
+                      "ORDER BY v.favorite DESC, last_used DESC, v.name LIMIT 12", ('%'+term+'%',))
+    @staticmethod
+    def _label(r):
+        code=' — '.join(x for x in (q(r['last_code']), q(r['last_label'])) if x)
+        return ('★ ' if r['favorite'] else '') + q(r['name']) + (f"   ({code})" if code else '')
+    # ---- show / hide ------------------------------------------------------------------------
+    def _fill(self, rows):
+        self.lb.delete(0,'end'); self._names=[q(r['name']) for r in rows]
+        for r in rows: self.lb.insert('end', self._label(r))
+        self._show() if rows else self.hide()
+    def _show(self):
+        top=self.winfo_toplevel()
+        try:
+            x=self.entry.winfo_rootx()-top.winfo_rootx()
+            y=self.entry.winfo_rooty()-top.winfo_rooty()+self.entry.winfo_height()
+            self.lb.place(in_=top, x=x, y=y, width=max(self.entry.winfo_width(), 120)); self.lb.lift()
+        except Exception:
+            self.hide()  # geometry not realized yet — better no list than a stray one in the corner
+    def hide(self):
+        try: self.lb.place_forget()
+        except Exception: pass
+    def visible(self):
+        return bool(self.lb.winfo_ismapped())
+    # ---- events -----------------------------------------------------------------------------
+    def _typed(self, e=None):
+        if e is not None and e.keysym in ('Up','Down','Return','Escape','Tab'): return
+        term=self.value_var.get().strip()
+        self._fill(self._matches(term)) if term else self.hide()
+    def show_all(self):
+        self.entry.focus_set(); self._fill(self._matches(''))
+    def _into_list(self, e=None):
+        if not self.visible(): return
+        self.lb.focus_set(); self.lb.selection_clear(0,'end'); self.lb.selection_set(0); self.lb.activate(0)
+        return 'break'
+    def _escape(self, e=None):
+        # Only swallow Esc when the list is actually open, so Esc still closes the dialog otherwise.
+        if self.visible(): self.hide(); return 'break'
+    def _maybe_hide(self, e=None):
+        # Clicking a suggestion fires FocusOut on the entry first; defer so the click still lands.
+        self.after(150, lambda: None if (self.focus_get() is self.lb) else self.hide())
+    def pick(self, e=None):
+        sel=self.lb.curselection()
+        if not sel: return
+        self.value_var.set(self._names[sel[0]]); self.hide(); self.entry.focus_set()
+        if self.on_pick: self.on_pick()
+
 class CalendarPopup(tk.Toplevel):
     """Tiny dependency-free month calendar. Clicking a day writes YYYY-MM-DD into the bound StringVar."""
     def __init__(self, master, date_var):
@@ -1344,6 +1451,13 @@ class ExpenseDialog(tk.Toplevel):
         self.user_var=tk.StringVar(value=user_name)
         # Button bar pinned to the bottom (packed first) so it is ALWAYS visible; FlowBar wraps it when narrow.
         btn=FlowBar(self,padding=4); btn.pack(side='bottom',fill='x')
+        # Prev/next lead the bar: navigation reads first, and the counter beside them says where you are.
+        # Ends DISABLE rather than wrap — silently teleporting from the last expense to the first reads as
+        # a bug, and a greyed arrow tells you you are at the end without you having to test it.
+        self._nav_prev=btn.button('◀', lambda: self._step(-1)); Tooltip(self._nav_prev, 'Previous expense in the list behind this dialog (same order, same filter).')
+        self._nav_next=btn.button('▶', lambda: self._step(1)); Tooltip(self._nav_next, 'Next expense in the list behind this dialog (same order, same filter).')
+        self.nav_var=tk.StringVar(); btn.attach(ttk.Label(btn, textvariable=self.nav_var, foreground='#555'))
+        btn.separator()
         for txt,cmd in [('Save',self.save),('Attach Receipt',lambda:self.attach('Receipt')),('Attach Invoice',lambda:self.attach('Invoice')),
                         ('Detach Receipt',lambda:self.detach('Receipt')),('Detach Invoice',lambda:self.detach('Invoice')),
                         ('OCR Receipt',lambda:self.ocr('receipt_path')),('OCR Invoice',lambda:self.ocr('invoice_path')),
@@ -1384,7 +1498,9 @@ class ExpenseDialog(tk.Toplevel):
         ttk.Entry(date_frame, textvariable=v('transaction_date', today())).grid(row=0,column=0,sticky='ew')
         ttk.Button(date_frame, text='📅', width=3, command=lambda:CalendarPopup(self, self.vars['transaction_date'])).grid(row=0,column=1,padx=(4,0))
         add('Transaction date', date_frame)
-        vendor_entry=ttk.Entry(frm, textvariable=v('vendor','')); add('Vendor *', vendor_entry); vendor_entry.bind('<FocusOut>', self.apply_vendor_template)
+        self.vendor_pick=VendorPicker(frm, v('vendor',''), on_pick=self.apply_vendor_template)
+        add('Vendor *', self.vendor_pick); vendor_entry=self.vendor_pick.entry
+        vendor_entry.bind('<FocusOut>', self.apply_vendor_template, add='+')
         vcmd=(self.register(_num_validate), '%P')  # restrict numeric fields to money-shaped input as typed
         add('Amount', ttk.Entry(frm, textvariable=v('amount','0.00'), validate='key', validatecommand=vcmd))
         fee_frame=ttk.Frame(frm); fee_frame.columnconfigure(0, weight=1)
@@ -1425,11 +1541,58 @@ class ExpenseDialog(tk.Toplevel):
         # _undo_staged_files(). (dest, where it came from, whether we MOVED it rather than copied.)
         self._staged=[]
         self._baseline=self._snapshot()
+        self._update_nav()
         self.protocol('WM_DELETE_WINDOW', self.close)
     def _snapshot(self):
         out={k:(v.get('1.0','end') if isinstance(v, tk.Text) else v.get()) for k,v in self.vars.items()}
         out['_user']=self.user_var.get(); out['_report']=self.report_var.get()
         return out
+    def _nav_ids(self):
+        """The expense ids the main list is showing, in the order it is showing them.
+
+        Taken from the TREE, not re-queried: ◀/▶ has to match what is on screen, including the current
+        search box and status filter, and expenses nested under a report in their displayed position."""
+        get=getattr(self.master, 'visible_expense_ids', None)
+        try: return list(get()) if get else []
+        except Exception: return []
+    def _update_nav(self):
+        ids=self._nav_ids(); i=ids.index(self.exp_id) if self.exp_id in ids else -1
+        for btn, ok in ((self._nav_prev, i>0), (self._nav_next, 0<=i<len(ids)-1)):
+            try: btn.state(['!disabled'] if ok else ['disabled'])
+            except Exception: pass
+        self.nav_var.set(f'{i+1} of {len(ids)}' if i>=0 else '')
+    def load_expense(self, exp_id):
+        """Repopulate this dialog from another expense, in place — the point of ◀/▶ is not closing and
+        reopening. Only real columns are written, so a var that is not a DB field is left alone."""
+        row=S.row('SELECT * FROM expenses WHERE id=?',(exp_id,))
+        if not row: return False
+        data=dict(row); self.exp_id=exp_id
+        for name, var in self.vars.items():
+            if name not in data: continue
+            val=data[name]
+            if isinstance(var, tk.Text): var.delete('1.0','end'); var.insert('1.0', q(val))
+            elif isinstance(var, tk.IntVar): var.set(int(val or 0))
+            else: var.set(q(val))
+        self.user_var.set(next((n for n,i in self.user_map.items() if i==data.get('user_id')), self.user_var.get()))
+        self.report_var.set(next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT))
+        self.tpl_var.set(NO_TEMPLATE)
+        self._staged=[]  # files staged for the expense we just left belong to IT, not to this one
+        self._baseline=self._snapshot(); self._update_nav()
+        try: self._concur_hints()
+        except Exception: pass
+        return True
+    def _step(self, delta):
+        """Move one expense, honouring the same unsaved-edits prompt as closing does."""
+        ids=self._nav_ids()
+        if self.exp_id not in ids: return
+        i=ids.index(self.exp_id)+delta
+        if not 0<=i<len(ids): return
+        if self._snapshot()!=self._baseline:
+            ans=messagebox.askyesnocancel('Unsaved changes','Save your changes to this expense before moving on?', parent=self)
+            if ans is None: return                      # Cancel = stay put
+            if ans and not self.save(close=False): return  # validation failed — do not silently move off it
+            if not ans: self._undo_staged_files()       # discarded: leave no orphan attachment behind
+        self.load_expense(ids[i])
     def _undo_staged_files(self):
         """Put the disk back the way it was when a dialog is abandoned without saving.
 
@@ -2650,7 +2813,7 @@ class App(tk.Tk):
                  ('Edit',self.edit),('Attach File',self.attach_selected),('Mark Filed',self.mark_filed),None,
                  ('Add to Report',self.assign_report),('Open Receipt/Invoice',self.open_doc),None,
                  ('Delete',self.delete),None,
-                 ('Ask for Receipts',self.request_receipts),('Open Concur',lambda:webbrowser.open(CONCUR_URL))]
+                 ('Ask for Receipts',self.request_receipts),('Open Concur',lambda:open_concur(self.flash_status))]
         for item in toolbar:
             if item is None: actions.separator(); continue
             txt,cmd=item; b=actions.button(txt,cmd)
@@ -2814,6 +2977,19 @@ class App(tk.Tk):
         for e in S.rows('SELECT * FROM expenses WHERE user_id=? AND report_id IS NULL ORDER BY transaction_date DESC, id DESC',(uid,)) if uid else []:
             if self.match(e,term,st): self.insert_exp('',e)
         self._sync_checks(); self.refresh_counter()
+    def visible_expense_ids(self):
+        """Every expense id the tree is currently showing, in display order — report children included,
+        in the position they appear. This is what the expense dialog's prev/next walks, so the arrows
+        follow the search box and status filter instead of some other order."""
+        out=[]
+        def walk(parent):
+            for iid in self.tree.get_children(parent):
+                if iid.startswith('E'):
+                    try: out.append(int(iid[1:]))
+                    except ValueError: pass
+                walk(iid)
+        walk('')
+        return out
     def match(self,e,term,st):
         if not self.show_filed.get() and st!='Filed' and e['status']=='Filed': return False  # default-hide the filed archive
         if not (st=='All' or e['status']==st): return False

@@ -287,6 +287,16 @@ over and over (the same Uber ride, a recurring vendor, a standard meal). The app
 entertainment — each pre-filled with that vendor's usual expense code and business purpose. Delete any you don't
 want (they stay gone), or add your own. Every template requires a **vendor**.
 
+**Vendor type-ahead.** The **Vendor** field suggests vendors you have used before as you type — favourites
+first, then the ones you filed most recently — showing each one's remembered expense code beside it. Click the
+**▾** to browse without typing. Picking one fills the vendor and its usual expense code. **Esc** closes the
+suggestion list without closing the expense.
+
+**Paging between expenses.** **◀** / **▶** at the bottom of the expense window step through the list *exactly
+as it is on screen* — same order, same search box, same status filter, and expenses inside a report in the
+position they appear — with a **"3 of 12"** counter beside them. The arrows grey out at each end rather than
+looping around, and unsaved edits get the usual Save / Discard / Cancel question before you move off.
+
 - **Apply a template:** in the expense dialog, pick one from the **Apply template** dropdown at the top (or click
   **Apply**). The template's saved fields — vendor, expense code, payment type, whatever was stored — fill in
   instantly. You can still edit anything afterward. To get back to no template, pick **(none)** at the top of the
@@ -367,6 +377,8 @@ On the filter row:
 - **Open Receipt/Invoice** (toolbar or right-click) opens the attached file; **Open File Location** (More ▾ or
   right-click) reveals it in Explorer.
 - **Open Receipt Root** / **Open Inbox** (More ▾) jump to those folders.
+- **Open Concur** launches **Chrome** specifically, because the autofill extension is a Chrome extension. If
+  Chrome isn't installed it falls back to your default browser and tells you the autofill won't be there.
 - After filing in Concur, select the expense and click **Mark Filed**.
 
 ### Importing a Concur export (reconciling)
