@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.31.2
+Concur Buddy — version 2026.08.31.3
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,18 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.31.3 — the two oldest known bugs, both fixed. **Cancelling an expense no longer strands your
+receipt.** Attaching a file organizes it onto disk straight away (it has to — that is what the OCR and Open
+buttons work on), but nothing undid that if you then pressed Cancel: the receipt had already been renamed
+and moved OUT of your inbox, with no expense pointing at it, so it looked filed and was effectively lost.
+Cancel now puts it back exactly where it came from. A file you attached from somewhere other than the inbox
+was only ever COPIED, so Cancel removes that duplicate and never touches your original. Saving is unaffected
+— once an expense points at a file, no later Cancel can claw it back. **And you can un-pick a template.** The
+Apply-template dropdown had no blank entry, so once you chose one there was no way back to "no template"
+short of closing the window; there is now a **(none)** entry at the top, and pressing Esc while the dropdown
+is focused clears the choice instead of closing the whole expense. Picking (none) clears the selection — it
+does not wipe fields that are already filled in, since you may have edited them.
 
 2026.08.31.2 — FIXES the Oracle Codes list on a report: you can now actually pick one. Opening an expense
 report and clicking **Oracle Codes** showed the list but every row was inert — nothing you clicked went into

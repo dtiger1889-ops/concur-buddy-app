@@ -202,6 +202,12 @@ separate **Attach Receipt** and **Attach Invoice** buttons (and separate **OCR R
 buttons), plus an optional **Invoice number** field. Use **Open Receipt Loc** / **Open Invoice Loc** to jump to
 either file in Explorer.
 
+**Cancelling is safe.** Attaching files the document on disk straight away — that is what the OCR and Open
+buttons work on — but if you then close the expense without saving, the file goes back exactly where it came
+from. A file attached from your inbox returns to the inbox; a file attached from anywhere else was only ever
+*copied*, so the duplicate is removed and your original is untouched. Once you save, the attachment belongs to
+that expense and cancelling a later edit never claws it back.
+
 ### Status lifecycle
 Every expense moves through these stages:
 
@@ -283,7 +289,9 @@ want (they stay gone), or add your own. Every template requires a **vendor**.
 
 - **Apply a template:** in the expense dialog, pick one from the **Apply template** dropdown at the top (or click
   **Apply**). The template's saved fields — vendor, expense code, payment type, whatever was stored — fill in
-  instantly. You can still edit anything afterward.
+  instantly. You can still edit anything afterward. To get back to no template, pick **(none)** at the top of the
+  list, or press **Esc** while the dropdown is focused — that clears the choice without closing the expense.
+  It clears the *selection* only; fields already filled in stay as they are, since you may have edited them.
 - **Save the current expense as a template:** in the expense dialog, click **Save as Template**. You name it and
   **tick exactly which of the filled fields to keep** (just the expense code, or everything — your call). Vendor is
   always included.

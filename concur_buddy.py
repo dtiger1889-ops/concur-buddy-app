@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.31.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.31.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -271,6 +271,7 @@ def detect_card(text, cards):
     return c, conf, why + ('' if conf == 'sure' else ' (network and digits were far apart, so double-check)')
 CC_FEE_RATE = 0.03  # industry-standard credit-card surcharge used by the "Amount after CC fee" auto-calc
 NO_REPORT = '(No report)'  # sentinel shown in the expense dialog's report dropdown = leave the expense unassigned
+NO_TEMPLATE = '(none)'  # leading entry in the Apply-template dropdown = no template chosen, and the way back out of one
 NEW_REPORT = '(new report from the name)'  # sentinel in the importer's merge picker = don't join an existing report
 
 def report_choice_label(r):
@@ -1358,8 +1359,15 @@ class ExpenseDialog(tk.Toplevel):
             nonlocal row; ttk.Label(frm,text=label).grid(row=row,column=0,sticky='w',pady=3); widget.grid(row=row,column=1,sticky='ew',pady=3); row+=1
         # Apply-template selector: picking a template fills the matching fields (also re-appliable via the Apply button).
         tpl_row=ttk.Frame(frm); tpl_row.columnconfigure(0, weight=1)
-        self.tpl_var=tk.StringVar(); self.tpl_cb=ttk.Combobox(tpl_row, textvariable=self.tpl_var, values=[r['name'] for r in S.get_templates()], state='readonly')
+        self.tpl_var=tk.StringVar(value=NO_TEMPLATE)
+        self.tpl_cb=ttk.Combobox(tpl_row, textvariable=self.tpl_var, values=[NO_TEMPLATE]+[r['name'] for r in S.get_templates()], state='readonly')
         self.tpl_cb.grid(row=0,column=0,sticky='ew'); self.tpl_cb.bind('<<ComboboxSelected>>', self.apply_template)
+        # Esc in the picker means "I didn't want a template", not "throw the whole expense away" — the
+        # dialog-wide Esc binding closes the window, so this must swallow the key ('break').
+        self.tpl_cb.bind('<Escape>', lambda e: (self.tpl_var.set(NO_TEMPLATE), 'break')[1])
+        Tooltip(self.tpl_cb, 'Picking a template fills the matching fields below. '
+                             f'Choose {NO_TEMPLATE} to go back to no template — it clears the choice, '
+                             'it does not wipe fields that are already filled in.')
         ttk.Button(tpl_row, text='Apply', width=8, command=self.apply_template).grid(row=0,column=1,padx=(4,0))
         add('Apply template', tpl_row)
         add('User', ttk.Combobox(frm, textvariable=self.user_var, values=list(self.user_map), state='readonly'))
@@ -1413,18 +1421,55 @@ class ExpenseDialog(tk.Toplevel):
             self.vars[fld].trace_add('write', self._concur_hints)
         self._concur_hints()
         # Unsaved-changes guard: window [X] and Esc both route through close(), which prompts if edits are pending.
+        # Files this dialog organized onto disk that are NOT yet committed to an expense; see
+        # _undo_staged_files(). (dest, where it came from, whether we MOVED it rather than copied.)
+        self._staged=[]
         self._baseline=self._snapshot()
         self.protocol('WM_DELETE_WINDOW', self.close)
     def _snapshot(self):
         out={k:(v.get('1.0','end') if isinstance(v, tk.Text) else v.get()) for k,v in self.vars.items()}
         out['_user']=self.user_var.get(); out['_report']=self.report_var.get()
         return out
+    def _undo_staged_files(self):
+        """Put the disk back the way it was when a dialog is abandoned without saving.
+
+        `attach()` organizes the file the moment you pick it — it has to, because OCR and the Open
+        buttons work on the organized copy. But nothing undid that if you then pressed Cancel, so
+        'Add Expense -> attach -> Cancel' left the receipt renamed and moved OUT of the inbox with no
+        expense pointing at it: the file looked filed and was actually lost. Only files THIS dialog
+        staged and never saved are touched; save() empties the list, so a later Cancel can never reach
+        an attachment that is already committed."""
+        problems=[]
+        for dest, origin, was_move in self._staged:
+            try:
+                if not os.path.exists(dest): continue  # already moved on (e.g. detached) — leave it alone
+                if was_move:
+                    # Came out of the inbox: put it back, under its original name where that is free.
+                    back=Path(origin)
+                    if back.parent.exists():
+                        stem,ext=back.stem, back.suffix; i=2
+                        while back.exists(): back=back.parent/f"{stem} ({i}){ext}"; i+=1
+                        shutil.move(dest, str(back))
+                    else:
+                        problems.append(f"{Path(dest).name} — its inbox folder is gone, so it was left at {dest}")
+                elif os.path.exists(origin):
+                    # We only ever made a COPY here; the original is still where the user keeps it, so
+                    # removing our duplicate loses nothing. If the original has vanished, keep the copy.
+                    os.remove(dest)
+            except Exception as e:
+                problems.append(f"{Path(dest).name} — {type(e).__name__}: {e}")
+        self._staged=[]
+        if problems:
+            messagebox.showwarning('Some files could not be put back',
+                                   'You cancelled, so these were meant to return to where they came from:\n\n  '
+                                   + '\n  '.join(problems[:8]) + '\n\nNothing was deleted.', parent=self)
     def close(self):
         """Close with a save prompt when there are unsaved edits (Yes=save, No=discard, Cancel=stay)."""
         if self._snapshot()!=self._baseline:
             ans=messagebox.askyesnocancel('Unsaved changes','Save your changes to this expense before closing?', parent=self)
             if ans is None: return
             if ans: self.save(); return  # save() closes on success; on a validation warning the dialog stays open
+        self._undo_staged_files()  # discarded, or never dirty — either way this dialog leaves no orphans
         self.destroy()
     def _concur_hints(self, *a):
         msgs=[]
@@ -1465,7 +1510,7 @@ class ExpenseDialog(tk.Toplevel):
         else: v.set(q(value))
     def apply_template(self, e=None):
         name=self.tpl_var.get().strip()
-        if not name: return
+        if not name or name==NO_TEMPLATE: return  # "(none)" is the way OUT of a template, not one to apply
         for k,val in S.template_fields(name).items(): self.set_field(k, val)
     def current_template_values(self):
         """Snapshot every template-eligible field's current value (string-ified) for Save-as-Template."""
@@ -1489,7 +1534,7 @@ class ExpenseDialog(tk.Toplevel):
         if not self.txt('vendor').strip(): messagebox.showwarning('Vendor required','A template must have a vendor — enter the vendor first.', parent=self); return
         SaveTemplateDialog(self, self.current_template_values(), on_saved=self.refresh_templates)
     def refresh_templates(self):
-        self.tpl_cb['values']=[r['name'] for r in S.get_templates()]
+        self.tpl_cb['values']=[NO_TEMPLATE]+[r['name'] for r in S.get_templates()]
     def txt(self, name):
         v=self.vars[name]; return v.get('1.0','end').strip() if isinstance(v, tk.Text) else v.get()
     def save(self, close=True):
@@ -1502,6 +1547,7 @@ class ExpenseDialog(tk.Toplevel):
         if self.exp_id: S.execute('UPDATE expenses SET '+', '.join([f'{k}=?' for k in vals])+' WHERE id=?', tuple(vals.values())+(self.exp_id,))
         else: self.exp_id=S.execute('INSERT INTO expenses('+', '.join(vals)+') VALUES('+', '.join(['?']*len(vals))+')', tuple(vals.values())).lastrowid
         S.upsert_vendor(vals['vendor'], vals['expense_type_code'], vals['expense_type_label'])  # remember last code for this vendor
+        self._staged=[]  # committed: an expense now points at these, so Cancel must never claw them back
         self._baseline=self._snapshot()  # what's on screen is now what's on disk
         self.master.refresh()
         if close: self.destroy()
@@ -1547,9 +1593,9 @@ class ExpenseDialog(tk.Toplevel):
             ext=Path(p).suffix; dest=self.organized_name(doc, ext)
             inbox=get_local_setting('inbox_path')
             if is_within(p, inbox):  # came from the inbox -> move it out entirely (copy+rename then drop original)
-                shutil.move(p, dest)
+                shutil.move(p, dest); self._staged.append((str(dest), p, True))
             else:
-                shutil.copy2(p, dest)
+                shutil.copy2(p, dest); self._staged.append((str(dest), p, False))
         except Exception as e:
             # Most often the Receipt root is unset/unreachable on THIS machine — tell the user where to fix it
             # instead of silently doing nothing (the old behavior swallowed the error in the button callback).
