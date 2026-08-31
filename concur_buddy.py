@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.27.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.08.31.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -271,6 +271,12 @@ def detect_card(text, cards):
     return c, conf, why + ('' if conf == 'sure' else ' (network and digits were far apart, so double-check)')
 CC_FEE_RATE = 0.03  # industry-standard credit-card surcharge used by the "Amount after CC fee" auto-calc
 NO_REPORT = '(No report)'  # sentinel shown in the expense dialog's report dropdown = leave the expense unassigned
+NEW_REPORT = '(new report from the name)'  # sentinel in the importer's merge picker = don't join an existing report
+
+def report_choice_label(r):
+    """How a report reads in a one-line picker. A filed report keeps its name but says so, because
+    'which of these can I still add to' is the only question a report list has to answer."""
+    return f"{q(r['name'])}   (filed)" if q(r['status'])=='Filed' else q(r['name'])
 # Expense fields that make sense to bake into a reusable template. Per-instance fields (transaction date,
 # attached file paths, invoice number, OCR text, missing-receipt ack) are intentionally excluded.
 TEMPLATE_FIELDS = [
@@ -1358,7 +1364,11 @@ class ExpenseDialog(tk.Toplevel):
         add('Apply template', tpl_row)
         add('User', ttk.Combobox(frm, textvariable=self.user_var, values=list(self.user_map), state='readonly'))
         # Assign the expense to one of this user's reports right here (no need for the separate Assign-to-Report step).
-        self.report_map={r['name']:r['id'] for r in S.rows('SELECT id,name FROM reports WHERE user_id=? ORDER BY created_at DESC',(self.user_map.get(user_name),))}
+        # Open (not-yet-filed) reports come first and already-filed ones are labelled as such — same reasoning as
+        # AssignReportDialog: the reports you can still add to must not be lost among the ones already submitted.
+        self.report_map={report_choice_label(r):r['id'] for r in
+                         S.rows("SELECT id,name,status FROM reports WHERE user_id=? "
+                                "ORDER BY (status='Filed'), created_at DESC",(self.user_map.get(user_name),))}
         cur_rep=next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT)
         self.report_var=tk.StringVar(value=cur_rep)
         add('Expense report', ttk.Combobox(frm, textvariable=self.report_var, values=[NO_REPORT]+list(self.report_map), state='readonly'))
@@ -1870,23 +1880,46 @@ class TemplateGlossary(tk.Toplevel):
 
 class AssignReportDialog(tk.Toplevel):
     """Pick an existing report from a list (or unassign) instead of typing the name. Accepts one expense id
-    or a list of them (bulk assign from a multi-selection)."""
+    or a list of them (bulk assign from a multi-selection).
+
+    The list is SPLIT: reports still open (not yet submitted in Concur) sit at the top, already-filed ones
+    below a heading. A flat A-Z list buried the three reports he can actually still add to among a year of
+    dead ones — the whole point of picking from a list is not having to remember which is which."""
     def __init__(self, master, exp_id, user_id, on_done):
-        super().__init__(master); self.title('Assign to Report'); self.geometry('420x360'); self.minsize(360, 300)
+        super().__init__(master); self.title('Assign to Report'); self.geometry('460x400'); self.minsize(380, 320)
         self.transient(master); self.grab_set(); self.on_done=on_done
         self.exp_ids=list(exp_id) if isinstance(exp_id,(list,tuple,set)) else [exp_id]
-        self.reps=S.rows('SELECT id,name FROM reports WHERE user_id=? ORDER BY name',(user_id,))
+        self.reps=S.rows('SELECT id,name,status FROM reports WHERE user_id=? ORDER BY name',(user_id,))
+        openr=[r for r in self.reps if q(r['status'])!='Filed']; filed=[r for r in self.reps if q(r['status'])=='Filed']
         n=len(self.exp_ids)
         ttk.Label(self,text=(f'Assign these {n} expenses to:' if n!=1 else 'Assign this expense to:'),padding=8).pack(anchor='w')
         self.lb=tk.Listbox(self); self.lb.pack(fill='both',expand=True,padx=8)
-        self.lb.insert('end','<Unassigned>')
-        for r in self.reps: self.lb.insert('end', r['name'])
+        # `entries` runs line-for-line with the listbox: a report id, None for <Unassigned>, or the HEADING
+        # sentinel for the two grey divider lines (which are not a choice you can make).
+        self.entries=[]
+        def add_line(text, entry, grey=False):
+            self.lb.insert('end', text); self.entries.append(entry)
+            if grey: self.lb.itemconfig(self.lb.size()-1, foreground='#7a7a7a')
+        add_line('<Unassigned>', None)
+        if openr:
+            add_line('— Open reports (not filed yet) —', self.HEADING, grey=True)
+            for r in openr: add_line(r['name'], r['id'])
+        if filed:
+            add_line('— Already filed in Concur —', self.HEADING, grey=True)
+            for r in filed: add_line(r['name'], r['id'], grey=True)
+        if not self.reps: add_line('(no reports yet for this user)', self.HEADING, grey=True)
+        ttk.Label(self,text='Open reports are the ones you can still add to. Filed ones are already submitted —\n'
+                            'assigning to one is allowed, but it will not change what Concur already has.',
+                  padding=(8,4),foreground='#555',justify='left').pack(anchor='w')
         btn=FlowBar(self,padding=8); btn.pack(side='bottom',fill='x'); btn.button('Assign',self.assign); btn.button('Cancel',self.destroy)
         self.lb.bind('<Double-1>', lambda e: self.assign()); self.bind('<Escape>', lambda e: self.destroy())
+    HEADING = object()  # marks a divider line: shown, greyed, and never assignable
     def assign(self):
         sel=self.lb.curselection()
         if not sel: return
-        idx=sel[0]; rid=None if idx==0 else self.reps[idx-1]['id']
+        rid=self.entries[sel[0]]
+        if rid is self.HEADING:
+            messagebox.showinfo('Assign to Report','That line is a heading — pick one of the reports under it.',parent=self); return
         for eid in self.exp_ids: S.execute('UPDATE expenses SET report_id=? WHERE id=?',(rid,eid))
         if rid:
             try: collect_report_receipts(rid)  # keep the report's folder of receipts current
@@ -2303,11 +2336,33 @@ class ConcurImportDialog(tk.Toplevel):
         top=ttk.Frame(self,padding=(8,6)); top.pack(fill='x')
         ttk.Label(top,text=f"{len(rows)} expenses in {Path(path).name}   ·   matching against "
                            f"{len(staged)} staged for this user").pack(anchor='w')
-        rep=ttk.Frame(self,padding=(8,0)); rep.pack(fill='x')
-        ttk.Label(rep,text='Group them under report:').pack(side='left')
+        # The report row. Two controls, because there are two different jobs: NAME the report (Concur's own
+        # name is the canonical one, so it is prefilled from the export) and, optionally, say that this import
+        # belongs to a report already staged here under a name he typed himself before Concur had one.
+        rep=FlowBar(self,padding=(8,2)); rep.pack(fill='x')
+        namebox=ttk.LabelFrame(rep,text=' Report name (from Concur) ',padding=(6,2))
         self.report_name=tk.StringVar(value=report_name)
-        ttk.Entry(rep,textvariable=self.report_name,width=34).pack(side='left',padx=4)
-        ttk.Label(rep,text='(blank = leave them loose)').pack(side='left')
+        ttk.Entry(namebox,textvariable=self.report_name,width=30).pack(side='left')
+        ttk.Label(namebox,text=' blank = leave them loose',foreground='#555').pack(side='left')
+        rep.attach(namebox)
+        mergebox=ttk.LabelFrame(rep,text=' Existing report to merge into ',padding=(6,2))
+        self.existing=S.rows("SELECT id,name,status FROM reports WHERE user_id=? ORDER BY (status='Filed'), name",(user_id,))
+        self.merge_choice=tk.StringVar(value=NEW_REPORT)
+        self.merge_labels={report_choice_label(r):r['id'] for r in self.existing}
+        cb=ttk.Combobox(mergebox,textvariable=self.merge_choice,width=26,state='readonly',
+                        values=[NEW_REPORT]+list(self.merge_labels))
+        cb.pack(side='left'); cb.bind('<<ComboboxSelected>>', lambda e: self._merge_note())
+        Tooltip(cb,"Pick the report you already staged these under here. Its expenses stay put — this import "
+                   "just joins it instead of creating a second report for the same trip.")
+        self.rename_var=tk.IntVar(value=1)
+        ttk.Checkbutton(mergebox,text="Rename it to Concur's name",variable=self.rename_var,
+                        command=self._merge_note).pack(side='left',padx=(6,0))
+        rep.attach(mergebox)
+        # Retyping the name changes what the merge is about to do, so the note follows every keystroke.
+        self.report_name.trace_add('write', lambda *a: self._merge_note())
+        self.merge_note=tk.StringVar()
+        ttk.Label(self,textvariable=self.merge_note,padding=(8,0),foreground='#1a3d7c',wraplength=880,justify='left').pack(anchor='w')
+        self._merge_note()
         # Every button says what it acts on, and each carries a hover hint — the three middle ones only
         # retag the rows you have selected, which is not guessable from a bare verb.
         # Buttons live in LABELLED boxes, not behind hover text: which rows a button acts on has to be
@@ -2327,7 +2382,7 @@ class ConcurImportDialog(tk.Toplevel):
         bar.attach(allbox)
         self.tree=ttk.Treeview(self,columns=('ok','date','vendor','amount','type','action','detail'),show='headings',selectmode='extended')
         for c,w,t in [('ok',34,'✓'),('date',90,'Date'),('vendor',175,'Vendor (export)'),('amount',80,'Amount'),
-                      ('type',200,'Expense type'),('action',195,'What will happen'),('detail',250,'Notes')]:
+                      ('type',185,'Expense type'),('action',180,'What will happen'),('detail',330,'Notes')]:
             self.tree.heading(c,text=t); self.tree.column(c,width=w,anchor='center' if c=='ok' else 'w')
         # Colour carries the one thing that matters at a glance: does this row still want something from you?
         self.tree.tag_configure('needs', background='#fff3cd')   # amber - a field is still undecided
@@ -2345,33 +2400,57 @@ class ConcurImportDialog(tk.Toplevel):
         if unknown: hint+=f"\nColumns with no field here are kept as notes on new expenses: {', '.join(unknown[:6])}"
         ttk.Label(self,text=hint,padding=(8,2),foreground='#555',wraplength=900).pack(anchor='w',side='bottom')
         self.bind('<Escape>', lambda e: self.destroy())
-        self.refresh(); fit_to_screen(self, min_w=900, min_h=480)
+        self.refresh(); fit_to_screen(self, min_w=980, min_h=500)
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
         for i,p in enumerate(self.plans):
             r=p['row']; undecided=0
+            # The Notes cell is the only place that says WHY a row proposes what it proposes, so it is written
+            # as short sentences, not counters-and-jargon: "1 from card" told him nothing he could act on.
+            plural=lambda n,one,many: f"{n} {one if n==1 else many}"
             if p['action']=='merge':
                 e=p['candidates'][p['cand_index']][0]
                 rows=plan_rows(r,e); undecided=sum(1 for f,_,_,_,why in rows if why=='both')
                 act=f"Update #{e['id']} {q(e['vendor'])}"
                 bits=[]
-                if undecided: bits.append(f"{undecided} to decide" if not p.get('reviewed') else f"{undecided} decided")
+                if undecided: bits.append(plural(undecided,'field needs','fields need')+' your decision' if not p.get('reviewed')
+                                          else 'you settled '+plural(undecided,'field','fields'))
                 n_card=sum(1 for _,_,_,_,why in rows if why=='card'); n_fill=sum(1 for _,_,_,_,why in rows if why=='blank')
-                if n_card: bits.append(f"{n_card} from card")
-                if n_fill: bits.append(f"{n_fill} filled in")
-                if len(p['candidates'])>1: bits.append(f"{len(p['candidates'])} candidates")
+                if n_card: bits.append(plural(n_card,'field','fields')+" taken from Concur's card feed")
+                if n_fill: bits.append(plural(n_fill,'blank','blanks')+' here will be filled in')
+                if len(p['candidates'])>1: bits.append(f"{len(p['candidates'])} expenses here could be this one")
                 if r.get('_receipt_in_concur') is False and (e['receipt_path'] or e['invoice_path']):
-                    bits.append('file here, not in Concur')
-                detail=' · '.join(bits) or 'nothing differs'
+                    bits.append('you have the receipt, Concur does not')
+                detail=' · '.join(bits) or 'both copies already agree — this just links them'
                 tag='needs' if (undecided and not p.get('reviewed')) else 'ready'
             elif p['action']=='new':
                 act='Add as a new expense'; tag='new'
-                detail='no amount match' if not p['candidates'] else f"{len(p['candidates'])} possible match(es)"
-            else: act='Ignore — nothing happens'; detail=''; tag='skip'
+                detail=('nothing staged here has this amount' if not p['candidates']
+                        else plural(len(p['candidates']),'expense here has','expenses here have')+' this amount — Review to link one')
+            else: act='Ignore — nothing happens'; detail='left out of this import'; tag='skip'
             etype=' '.join(x for x in (q(r.get('expense_type_code')), q(r.get('expense_type_label'))) if x)
             self.tree.insert('','end',iid=str(i),tags=(tag,),
                              values=('✓' if p.get('reviewed') else '', q(r.get('transaction_date')), q(r.get('vendor')),
                                      money_part(r.get('amount')), etype, act, detail))
+    def _merge_target(self):
+        """The existing report this import should join, or None when it should find/create one by name."""
+        return self.merge_labels.get(self.merge_choice.get())
+    def _merge_note(self):
+        """Say in one sentence what the two report controls are about to do — a rename is destructive enough
+        that it must never be a surprise discovered after Apply."""
+        rid=self._merge_target(); name=self.report_name.get().strip()
+        if rid is None:
+            self.merge_note.set('' if name else 'These expenses will be left loose — no report.'); return
+        cur=q(S.scalar('SELECT name FROM reports WHERE id=?',(rid,)))
+        if name and self.rename_var.get() and name!=cur:
+            note=f'Joining "{cur}" — and renaming it to "{name}", since Concur\'s name is the real one.'
+            # Report names are not unique, so a rename CAN leave two reports called the same thing. Say so
+            # rather than quietly making a pair he then has to tell apart in every picker.
+            if S.row('SELECT 1 FROM reports WHERE user_id=? AND name=? AND id<>?',(self.user_id,name,rid)):
+                note+=f'  ⚠ You already have another report called "{name}" — you would end up with two.'
+            self.merge_note.set(note)
+        else:
+            self.merge_note.set(f'Joining "{cur}" — its name is kept.')
     def _sel(self): return [self.plans[int(i)] for i in self.tree.selection()]
     def set_action(self, action):
         for p in self._sel():
@@ -2385,8 +2464,15 @@ class ConcurImportDialog(tk.Toplevel):
         if not sel: messagebox.showinfo('Review','Select a row first.',parent=self); return
         ImportRowDialog(self, sel[0], on_done=self.refresh)
     def apply(self):
-        name=self.report_name.get().strip(); rid=None
-        if name:
+        name=self.report_name.get().strip(); rid=self._merge_target(); renamed=None
+        if rid is not None:
+            # Merging into a report already here. Concur's name is canonical, so it wins over whatever he
+            # called it before the report existed in Concur — unless he unticks the rename box.
+            was=q(S.scalar('SELECT name FROM reports WHERE id=?',(rid,)))
+            if name and self.rename_var.get() and name!=was:
+                S.execute('UPDATE reports SET name=? WHERE id=?',(name,rid)); renamed=(was,name)
+            else: name=was
+        elif name:
             got=S.row('SELECT id FROM reports WHERE user_id=? AND name=?',(self.user_id,name))
             rid=got['id'] if got else S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
         merged=new=skipped=codes=0; flags=[]
@@ -2420,6 +2506,7 @@ class ConcurImportDialog(tk.Toplevel):
             if r.get('vendor'): S.upsert_vendor(r['vendor'], q(r.get('expense_type_code')), q(r.get('expense_type_label')))
         msg=f"Merged {merged}, added {new} new, skipped {skipped}."
         if rid: msg+=f'\nGrouped under report "{name}".'
+        if renamed: msg+=f'\nRenamed report "{renamed[0]}" to "{renamed[1]}" (Concur\'s name).'
         if codes: msg+=f"\nLearned {codes} expense type(s) into the glossary."
         if flags: msg+=('\n\nThese have a receipt staged here that Concur says it does NOT have yet:\n  '
                         +'\n  '.join(flags[:12])+('\n  …' if len(flags)>12 else ''))

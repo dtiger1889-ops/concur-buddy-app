@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.27.3
+Concur Buddy — version 2026.08.31.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,17 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.08.31.1 — picking a report, and reading the Concur import. The "Assign to Report" list was a flat
+A-Z run of every report you have ever made, filed ones included, so the two or three you can actually still
+add to were buried; it now puts the OPEN (not yet filed) reports at the top under their own heading, with
+the already-filed ones below theirs. The report dropdown inside an expense does the same and labels a filed
+one "(filed)". The Concur importer's Notes column was written in shorthand ("1 from card", "no amount
+match") that only made sense if you already knew what it meant; every note is now a short sentence that says
+what will happen and why, and the column is wide enough to show it. And the importer can now MERGE into a
+report you already staged here instead of creating a second one for the same trip: pick it under "Existing
+report to merge into" and, by default, it is renamed to the name Concur uses — Concur's name is the
+canonical one — with a line on screen saying exactly which rename is about to happen before you press Apply.
 
 2026.08.27.3 — receipt filenames stay correct, and the long text boxes are finally readable. If you attach a
 receipt before you know the vendor or amount (common when the card charge lands a day or two later), saving

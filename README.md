@@ -299,6 +299,11 @@ amount, expense code, and report grouping are carried over; the attached files a
 opens the copy for editing. Handy for logging a run of similar expenses without retyping. Inside the expense dialog,
 **Copy to New** does the same from the open expense: it saves what's on screen, then opens a fresh Draft copy.
 
+**Which reports the picker offers.** Both the *Add to report…* list and the expense dialog's **Expense report**
+dropdown put the reports you can still add to — the ones **not yet filed** — at the top, under an *Open reports*
+heading, with the ones already filed in Concur below their own heading (the dropdown labels those `(filed)`
+instead). Assigning to a filed report is still allowed; it just won't change what Concur already has.
+
 **Filing several expenses into a report at once:** hold **Ctrl** (or **Shift**) and click to select multiple
 expenses, then either **right-click → "Add to report…"** or **drag the selected rows onto a report row** — the
 report row under your cursor highlights, and a small badge shows how many expenses you're dragging. The same
@@ -389,10 +394,24 @@ invoice exactly where they are — as does the status. If Concur's own *Receipt*
 an image for an expense you have a file for here, that's called out in the summary, so you know what still
 needs uploading.
 
+**Which report they land in.** The **Report name** box is prefilled from the export — Concur's own name — and
+an import with a name creates that report (or joins one that already has that exact name); leave it blank to
+keep the expenses loose. When you had already staged the trip here under a name of your own, pick that report
+under **Existing report to merge into** and the import joins it instead of creating a second report for the
+same trip. Because Concur's name is the canonical one, that report is **renamed** to the name in the box by
+default — untick *Rename it to Concur's name* to keep yours. Either way a line under the controls spells out
+exactly what is about to happen ("Joining *your staged name* — and renaming it to *the export's name*")
+before you press Apply. Expenses already sitting in some *other* report are never moved.
+
+**The Notes column explains itself.** Each row's *Notes* cell is a short sentence, not shorthand: "3 fields
+taken from Concur's card feed", "2 blanks here will be filled in", "1 field needs your decision", "you have
+the receipt, Concur does not", "nothing staged here has this amount", "2 expenses here have this amount —
+Review to link one".
+
 Also on import: unmatched rows become new expenses (status *Receipt received* if Concur already holds the
-receipt, otherwise *Awaiting receipt*), everything can be grouped under a report named after the file, any
-expense type the export mentions is learned into your Expense Codes glossary, and any column this app has no
-field for is kept as a note on new expenses rather than dropped.
+receipt, otherwise *Awaiting receipt*), any expense type the export mentions is learned into your Expense
+Codes glossary, and any column this app has no field for is kept as a note on new expenses rather than
+dropped.
 
 > Because the export's vendor name wins, a merged expense takes on the card's merchant string. Files already
 > organized on disk keep the name they were filed under.
