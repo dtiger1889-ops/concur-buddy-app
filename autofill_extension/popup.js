@@ -139,7 +139,7 @@ function render(data) {
     const who = document.createElement('div'); who.className = 'who';
     const b = document.createElement('b'); b.textContent = exp.vendor || '(no vendor)';
     const small = document.createElement('small');
-    small.textContent = `${exp.concur_fields.transactionDate || ''}  $${exp.concur_fields.transactionAmount || ''}  ${exp.expense_type_code || ''} ${exp.expense_type_label || ''}${exp.receipt ? '  📎' : ''}`;
+    small.textContent = `${exp.concur_fields.transactionDate || ''}  $${exp.concur_fields.transactionAmount || ''}  ${exp.expense_type_code || ''} ${exp.expense_type_label || ''}${exp.receipt ? '  📎' : (exp.receipt_missing ? '  ⚠ receipt file missing' : '')}`;
     who.append(b, small);
     const btn = document.createElement('button'); btn.textContent = 'Fill';
     btn.addEventListener('click', () => fill(exp));
@@ -170,7 +170,14 @@ async function fill(exp) {
     if (res.locked.length) text += `\nLocked by Concur (card data, left alone): ${res.locked.join(', ')}`;
     if (res.emptyInExport && res.emptyInExport.length) text += `\nEmpty in Concur Buddy (nothing to fill): ${res.emptyInExport.join(', ')}`;
     if (res.missing.length) text += `\nNot found on page (selector drift? see remap runbook): ${res.missing.join(', ')}`;
-    if (res.receipt && res.receipt !== 'none in export') text += `\nReceipt: ${res.receipt}`;
+    // Always say something about the receipt — silence here once hid a receipt whose file had been
+    // deleted, making it look like none was staged at all.
+    if (exp.receipt_missing)
+      text += `\n⚠ Receipt is attached in Concur Buddy but its file is missing on disk ("${exp.receipt_missing}"). Re-attach it in Concur Buddy and re-export, or upload it in Concur yourself.`;
+    else if (res.receipt === 'none in export')
+      text += `\nReceipt: none staged for this expense.`;
+    else if (res.receipt)
+      text += `\nReceipt: ${res.receipt}`;
     const manual = Object.entries(res.manual || {}).filter(([, v]) => v !== '' && v !== false && v !== undefined);
     if (manual.length) text += '\nStill yours to set: ' + manual.map(([k, v]) => `${k}=${v}`).join(', ');
     text += '\nReview the form, then click Save Expense yourself.';

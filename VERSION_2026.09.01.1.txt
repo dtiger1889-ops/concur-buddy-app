@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.08.31.5
+Concur Buddy — version 2026.09.01.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,18 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.09.01.1 — FIXES receipts getting duplicated on disk and then breaking. Re-attaching a receipt to an
+expense used to write a SECOND copy of the file named "... (2)" and point the expense at that copy, leaving
+the original beside it. Delete the duplicate, as anyone would, and the expense was suddenly pointing at
+nothing: Open, OCR, and Export all failed with "system cannot find the file". Re-attaching now REPLACES the
+file in its existing slot instead of spawning a numbered copy. Crucially it never deletes the receipt it
+replaces: the old file is moved back to your inbox (or a "_superseded" folder if you have no inbox set) so a
+receipt you had put on the wrong expense is preserved and can be re-filed, not destroyed. Two safety nets
+come with it: an expense still pointing at a deleted "... (2)" file now falls back to the surviving original
+automatically, and the autofill export (and its Chrome extension) now say plainly when a receipt is on file
+but its actual file has gone missing, instead of quietly acting as if no receipt existed — the silence that
+made a staged receipt look like it was never there.
 
 2026.08.31.5 — FIXES the ▾ button beside the Vendor field, which shut the list again the moment after you
 pressed it. Clicking the button moves focus off the text box, and the list was being closed whenever the

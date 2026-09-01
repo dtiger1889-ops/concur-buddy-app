@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.08.31.5"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.09.01.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -500,6 +500,22 @@ def resolve_attachment(stored):
                 cand=Path(anchor).joinpath(*parts[-k:])
                 if cand.exists(): return str(cand)
             except Exception: pass
+    # Self-heal a pointer to a deleted "<name> (2).ext" whose canonical original survives — the usual
+    # aftermath of the old duplicate-on-reattach bug. Retry every anchor with the " (n)" stripped, then
+    # look right next to the stored path itself in case only the exact copy was removed.
+    mnum=re.match(r'^(.*) \(\d+\)(\.[^.]*)$', parts[-1])
+    if mnum:
+        canon_parts=parts[:-1]+[mnum.group(1)+mnum.group(2)]
+        for anchor in anchors:
+            for k in range(min(4,len(canon_parts)),0,-1):
+                try:
+                    cand=Path(anchor).joinpath(*canon_parts[-k:])
+                    if cand.exists(): return str(cand)
+                except Exception: pass
+        try:
+            sib=Path(stored).with_name(mnum.group(1)+mnum.group(2))
+            if sib.exists(): return str(sib)
+        except Exception: pass
     return stored  # no anchor matched -> hand back the original so the caller's error is truthful
 def open_file_location(path):
     """Open the containing folder for an attached file, selecting the file where the OS supports it."""
@@ -1779,12 +1795,56 @@ class ExpenseDialog(tk.Toplevel):
                 self.vars[fld].set(str(dest))
             except Exception:
                 pass  # a rename is a nicety; the DB save must always go through
+    def _supersede_old(self, old_path):
+        """A re-attach is replacing THIS expense's current file. NEVER destroy the old one (this app does
+        not delete receipts — see detach): move the old organized copy somewhere recoverable and report
+        the slot as freed so the new file can reuse the canonical name. Preference: back to the inbox so
+        it can be re-filed to the RIGHT expense; failing that, a `_superseded` folder under the receipt
+        root. Returns True when the old file no longer occupies its slot (safe to reuse the name), False
+        to leave the slot as-is (then the caller gives the new file a fresh, non-colliding name instead of
+        overwriting). Conservative: a file that is NOT under the receipt tree, or that another expense
+        still points at, is left exactly where it is. Never raises."""
+        try:
+            if not old_path or not Path(old_path).exists(): return True  # nothing occupies the slot
+            anchors=[get_local_setting('receipt_root'),
+                     S.scalar('SELECT receipt_root FROM users WHERE id=?', (self.user_map[self.user_var.get()],))]
+            if not any(a and is_within(old_path, a) for a in anchors): return False  # not an organized file -> don't touch
+            target=Path(old_path).resolve()
+            for r in S.rows('SELECT id,receipt_path,invoice_path FROM expenses'):
+                if r[0]==getattr(self,'exp_id',None): continue
+                for stored in (r[1], r[2]):
+                    if not stored: continue
+                    try:
+                        if Path(resolve_attachment(stored)).resolve()==target: return False  # still in use elsewhere
+                    except Exception: pass
+            inbox=get_local_setting('inbox_path')
+            keep=Path(inbox) if (inbox and Path(inbox).exists()) else Path(get_local_setting('receipt_root'))/'_superseded'
+            keep.mkdir(parents=True, exist_ok=True)
+            stem,ext=Path(old_path).stem, Path(old_path).suffix
+            d=keep/Path(old_path).name; i=2
+            while d.exists(): d=keep/f"{stem} ({i}){ext}"; i+=1
+            shutil.move(old_path, str(d)); return True
+        except Exception: return False
     def attach(self, doc):
+        fld='receipt_path' if doc=='Receipt' else 'invoice_path'
         _inbox=get_local_setting('inbox_path'); _initial=_inbox if (_inbox and Path(_inbox).exists()) else str(Path.home())
         p=filedialog.askopenfilename(initialdir=_initial, title=f'Select {doc.lower()}')
         if not p: return
+        # A RE-attach must REPLACE this expense's file, not spawn a "<name> (2)" copy and repoint the DB at
+        # the copy (the bug that stranded a receipt once the duplicate was deleted). But it must ALSO never
+        # destroy the file it is replacing — you might have put it on the wrong expense and still need it.
+        # So: preserve the old file first (move it aside, recoverable), and only reuse its name once it is
+        # safely out of the slot; if it can't be moved safely, the new file gets a fresh name instead of
+        # overwriting anything.
+        old=self.vars[fld].get().strip()
+        old_resolved=resolve_attachment(old) if old else ''
         try:
-            ext=Path(p).suffix; dest=self.organized_name(doc, ext)
+            if old_resolved and os.path.exists(old_resolved) and os.path.exists(p) and os.path.samefile(p, old_resolved):
+                return  # re-picked the exact same file already attached — nothing to do
+        except Exception: pass
+        freed=self._supersede_old(old_resolved) if old_resolved else True
+        try:
+            ext=Path(p).suffix; dest=self.organized_name(doc, ext, exclude=(old_resolved if freed else None))
             inbox=get_local_setting('inbox_path')
             if is_within(p, inbox):  # came from the inbox -> move it out entirely (copy+rename then drop original)
                 shutil.move(p, dest); self._staged.append((str(dest), p, True))
@@ -1798,7 +1858,7 @@ class ExpenseDialog(tk.Toplevel):
                 f"Fix your Receipt root in Settings (it must be a folder that exists on THIS computer — "
                 f"e.g. your Google Drive receipts folder on this machine).", parent=self)
             return
-        (self.vars['receipt_path'] if doc=='Receipt' else self.vars['invoice_path']).set(str(dest))
+        self.vars[fld].set(str(dest))
         # A record can hold both docs; nudge the status forward without clobbering a later stage.
         cur=self.vars['status'].get()
         if doc=='Receipt':
@@ -3422,7 +3482,7 @@ class App(tk.Tk):
         out=[]
         for e in rows:
             d=dict(e)
-            out.append({
+            rec={
                 'id': d['id'], 'vendor': d['vendor'],
                 'expense_type_code': q(d['expense_type_code']), 'expense_type_label': q(d['expense_type_label']),
                 'concur_fields': {
@@ -3435,7 +3495,17 @@ class App(tk.Tk):
                                   'is_vendor_invoice': bool(d['is_vendor_invoice']),
                                   'invoice_number': q(d['invoice_number']), 'attendees': q(d['attendees'])},
                 'receipt': receipt_payload(d['receipt_path']),
-            })
+            }
+            # A receipt IS attached in Concur Buddy but its file couldn't be found/read on disk: say so
+            # loudly instead of exporting a silent null (that silence once masked a deleted-duplicate
+            # pointer and made the whole tool look like it had no receipt at all).
+            rp_raw=q(d['receipt_path'])
+            if rp_raw and rec['receipt'] is None:
+                cur=resolve_attachment(rp_raw)
+                if not (cur and os.path.exists(cur)):
+                    _pp=_path_parts(cur or rp_raw)  # separator-agnostic: a Windows path keeps its basename
+                    rec['receipt_missing']=_pp[-1] if _pp else (cur or rp_raw)
+            out.append(rec)
         with open(p,'w',encoding='utf-8') as f:
             json.dump({'generated': datetime.now().isoformat(timespec='seconds'), 'app_version': APP_VERSION,
                        'expenses': out}, f, indent=2)

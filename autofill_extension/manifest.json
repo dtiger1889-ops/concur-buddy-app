@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Concur Buddy Autofill",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fills SAP Concur expense forms from Concur Buddy's 'Export for Autofill' file. Human-triggered, one expense per click, nothing is ever saved or submitted by the extension.",
   "permissions": ["storage", "unlimitedStorage", "scripting"],
   "host_permissions": ["https://us2.concursolutions.com/*"],
