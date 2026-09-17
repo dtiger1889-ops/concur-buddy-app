@@ -623,3 +623,11 @@ back up `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` first.
 | OCR box says "OCR unavailable" | Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and `pip install pytesseract pillow pypdf`. The rest of the app still works without it. |
 | Attached file "no longer exists" when opening | The original was moved or deleted after attaching. Re-attach it. |
 | I want a clean slate | Close the app and delete `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` — it will be recreated empty on next launch. |
+
+---
+
+## License
+
+FSL-1.1-MIT: the Functional Source License. Use it, modify it, run it for yourself or for
+clients; the one thing you may not do is sell a competing product built from it, and that
+restriction expires two years after each release, when the MIT license applies. See LICENSE.
