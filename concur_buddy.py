@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.09.01.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.09.23.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -544,6 +544,54 @@ def scrolled_text(parent, height):
     sb=ttk.Scrollbar(f, orient='vertical', command=t.yview); sb.grid(row=0, column=1, sticky='ns')
     t.configure(yscrollcommand=sb.set)
     return f, t
+class VScrollFrame(ttk.Frame):
+    """A form area that SCROLLS instead of squashing when the window is shorter than its content.
+
+    Grid shrinks weighted rows first when a window is too short, so on a small laptop screen the multi-line
+    boxes (Comment, Loose notes) collapsed to a sliver with their labels cut in half. Here the form lives on a
+    canvas: it always gets at least its full requested height, and a scrollbar appears only when it doesn't fit.
+    When there IS spare room the inner frame is stretched to fill it, so weighted rows still grow with the window.
+    Put widgets in `.inner`; call `.fit_content()` once they're built so the dialog opens at the form's size."""
+    SELF_SCROLLING = ('Text', 'Listbox', 'TCombobox', 'Treeview')
+    def __init__(self, parent, **inner_kw):
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1); self.rowconfigure(0, weight=1)
+        self.canvas=tk.Canvas(self, highlightthickness=0, borderwidth=0, width=1, height=1)
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.vsb=ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+        self.inner=ttk.Frame(self.canvas, **inner_kw)
+        self._win=self.canvas.create_window(0, 0, window=self.inner, anchor='nw')
+        self.canvas.bind('<Configure>', self._sync)
+        top=self.winfo_toplevel()
+        top.bind('<MouseWheel>', self._wheel, add='+')
+        top.bind('<FocusIn>', self._reveal, add='+')  # Tab into an off-screen field scrolls it into view
+    def fit_content(self):
+        """Ask for the inner form's full natural size, so fit_to_screen sizes the dialog to the whole form."""
+        self.inner.update_idletasks()
+        self.canvas.configure(width=self.inner.winfo_reqwidth(), height=self.inner.winfo_reqheight())
+    def _sync(self, e=None):
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height(); rh = self.inner.winfo_reqheight()
+        h = max(ch, rh)
+        self.canvas.itemconfigure(self._win, width=cw, height=h)
+        self.canvas.configure(scrollregion=(0, 0, cw, h))
+        if rh > ch + 1: self.vsb.grid(row=0, column=1, sticky='ns')
+        else: self.vsb.grid_remove(); self.canvas.yview_moveto(0)
+    def _inside(self, w):
+        return isinstance(w, tk.Misc) and str(w).startswith(str(self.inner))
+    def _wheel(self, e):
+        if not self.vsb.winfo_ismapped() or not self._inside(e.widget): return
+        if e.widget.winfo_class() in self.SELF_SCROLLING: return  # that box scrolls its own text
+        self.canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units')
+    def _reveal(self, e):
+        w = e.widget
+        if not self.vsb.winfo_ismapped() or not self._inside(w): return
+        try:
+            y = w.winfo_rooty() - self.inner.winfo_rooty(); h = w.winfo_height()
+            total = max(1, self.inner.winfo_height()); top = self.canvas.canvasy(0); view = self.canvas.winfo_height()
+            if y < top: self.canvas.yview_moveto(max(0, y - 8) / total)
+            elif y + h > top + view: self.canvas.yview_moveto(max(0, y + h + 8 - view) / total)
+        except Exception: pass
 def work_area():
     """The usable desktop rectangle EXCLUDING the taskbar (Windows SPI_GETWORKAREA), as (x, y, w, h).
     winfo_screenheight() ignores the taskbar, which is why a near-full-height dialog tucks under it."""
@@ -1515,7 +1563,9 @@ class ExpenseDialog(tk.Toplevel):
         # Live "what Concur will require" hints — passive, never blocks a save (Concur enforces; we just warn).
         self.hint_var=tk.StringVar(); self.hint_lbl=ttk.Label(self, textvariable=self.hint_var, padding=(8,0), foreground='#996600')
         self.hint_lbl.pack(side='bottom', fill='x')
-        row=0; frm=ttk.Frame(self,padding=10); frm.pack(side='top',fill='both',expand=True); frm.columnconfigure(1, weight=1)
+        # The form scrolls rather than squashing: on a short screen grid used to crush Comment / Loose notes to a sliver.
+        self.form_scroll=VScrollFrame(self, padding=10); self.form_scroll.pack(side='top',fill='both',expand=True)
+        row=0; frm=self.form_scroll.inner; frm.columnconfigure(1, weight=1)
         def add(label, widget):
             nonlocal row; ttk.Label(frm,text=label).grid(row=row,column=0,sticky='w',pady=3); widget.grid(row=row,column=1,sticky='ew',pady=3); row+=1
         # Apply-template selector: picking a template fills the matching fields (also re-appliable via the Apply button).
@@ -1578,6 +1628,7 @@ class ExpenseDialog(tk.Toplevel):
                                 'Concur\'s importer wants.')
         add('Receipt path', ttk.Entry(frm, textvariable=v('receipt_path',''))); add('Invoice path', ttk.Entry(frm, textvariable=v('invoice_path','')))
         add('Invoice number', ttk.Entry(frm, textvariable=v('invoice_number','')))
+        self.form_scroll.fit_content()
         fit_to_screen(self, min_w=820, min_h=520)
         # Concur required-field hints update live as the relevant fields change.
         for fld in ('amount','receipt_path','invoice_number','business_purpose','is_vendor_invoice','missing_receipt_ack'):

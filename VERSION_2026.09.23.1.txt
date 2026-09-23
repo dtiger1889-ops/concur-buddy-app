@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.09.01.1
+Concur Buddy — version 2026.09.23.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,14 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.09.23.1 — FIXES the Comment and Loose notes boxes on the expense window, which were squashed to a thin
+sliver with their labels cut in half. The expense form is taller than most screens, and when it didn't fit,
+the window squeezed the stretchy text boxes first, so the two at the top of that group all but disappeared.
+The form now scrolls instead: every box keeps its full height, a scrollbar appears only when the form is
+taller than the window, the mouse wheel scrolls the form (and scrolls a text box's own contents when you are
+over one), and pressing Tab into a field below the fold scrolls it into view. On a screen big enough to show
+everything, nothing changes — the boxes still grow when you enlarge the window.
 
 2026.09.01.1 — FIXES receipts getting duplicated on disk and then breaking. Re-attaching a receipt to an
 expense used to write a SECOND copy of the file named "... (2)" and point the expense at that copy, leaving
