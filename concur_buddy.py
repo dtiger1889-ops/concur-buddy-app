@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.09.23.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.09.23.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -247,31 +247,66 @@ def find_card_mentions(text):
         if (d, pos) in seen: continue
         seen.add((d, pos)); uniq.append((d, pos))
     return nets, uniq
+# A MASKED number (****1234, xxxx1234) is a card by construction: nothing else on a receipt is printed with its
+# digits blanked out, so a masked last four that matches one of your cards is enough on its own.
+MASKED_LAST4 = '[*x#•·�]{2,}' + r'[\s-]*(\d{4})\b'  # stars, x's, bullets, OCR's replacement char
 def detect_card(text, cards):
-    """Match the OCR'd text against the cards set up in Settings.
+    """Match the OCR'd text against the cards set up in My cards. Returns (card_row, confidence, why) or
+    (None, None, reason). Three tiers, most specific first; any tie is no guess at all:
 
-    Returns (card_row, confidence, why) or (None, None, reason). Confidence is 'sure' when the network and
-    the last four sit close together, 'likely' when both appear but far apart (a receipt can print the network
-    in a header and the masked number in the footer). Two different cards matching = no guess at all."""
+    1. network + last four both in the text -> 'sure' when close together, 'likely' when far apart.
+    2. a MASKED last four of one of your cards, network not named (or named and agreeing) -> 'likely'.
+    3. a network RULE: a card row with no last four means "any card on this network is this payment type"
+       (e.g. any Visa = personal, any Mastercard = the purchasing card). Fires only when exactly ONE network
+       is named, so a "we accept Visa, Mastercard" footer never triggers it -> 'network'.
+    A row owned by the receipt's user beats an everyone row for the same network rule."""
     nets, fours = find_card_mentions(text)
     if not nets and not fours: return None, None, 'no card details found in the text'
-    if not nets: return None, None, 'found digits that could be a card, but nothing naming the network'
-    if not fours: return None, None, 'found a card network, but no last four digits'
+    numbered = [c for c in cards if q(c['last4']).strip()]
+    rules = [c for c in cards if not q(c['last4']).strip()]
+    # tier 1
     hits = []
-    for c in cards:
+    for c in numbered:
         last4 = q(c['last4']).strip(); net = q(c['network']).strip()
         d_pos = [p for d, p in fours if d == last4]
         n_pos = [p for n, p in nets if not net or n == net]
         if not d_pos or not n_pos: continue
         gap = min(abs(dp - np) for dp in d_pos for np in n_pos)
         hits.append((c, 'sure' if gap <= CARD_PROXIMITY else 'likely', gap))
-    if not hits: return None, None, 'card details found, but none match a card you have set up'
-    hits.sort(key=lambda h: h[2])
-    if len(hits) > 1 and hits[0][2] == hits[1][2]:
+    if hits:
+        hits.sort(key=lambda h: h[2])
+        if len(hits) > 1 and hits[0][2] == hits[1][2]:
+            return None, None, 'more than one of your cards matches this text — set the payment type by hand'
+        c, conf, gap = hits[0]
+        why = f"{q(c['network']) or 'card'} ending {q(c['last4'])} found in the text"
+        return c, conf, why + ('' if conf == 'sure' else ' (network and digits were far apart, so double-check)')
+    # tier 2
+    named = {n for n, _ in nets}
+    masked = {m.group(1) for m in re.finditer(MASKED_LAST4, q(text).lower())}
+    mhits = [c for c in numbered if q(c['last4']).strip() in masked
+             and (not named or not q(c['network']).strip() or q(c['network']).strip() in named)]
+    if len(mhits) > 1:
         return None, None, 'more than one of your cards matches this text — set the payment type by hand'
-    c, conf, gap = hits[0]
-    why = f"{q(c['network']) or 'card'} ending {q(c['last4'])} found in the text"
-    return c, conf, why + ('' if conf == 'sure' else ' (network and digits were far apart, so double-check)')
+    if mhits:
+        c = mhits[0]
+        return c, 'likely', f"masked card number ending {q(c['last4'])} found (your {q(c['network']) or 'card'})"
+    # tier 3
+    if len(named) == 1:
+        net = next(iter(named))
+        cands = [c for c in rules if q(c['network']).strip() == net]
+        own = [c for c in cands if c['user_id'] is not None]
+        pick = own or cands
+        if len(pick) == 1:
+            c = pick[0]
+            return c, 'network', (f"only {net} is named on the receipt (no card number of yours), and your rule "
+                                  f"says any {net} means \"{q(c['payment_type'])}\"")
+        if len(pick) > 1:
+            return None, None, f'two of your rules cover any {net} card — set the payment type by hand'
+    if len(named) > 1 and not fours:
+        return None, None, 'several card networks are named and no card number, so no guess'
+    if not nets: return None, None, 'found digits that could be a card, but nothing naming the network'
+    if not fours: return None, None, 'found a card network, but no last four digits'
+    return None, None, 'card details found, but none match a card you have set up'
 CC_FEE_RATE = 0.03  # industry-standard credit-card surcharge used by the "Amount after CC fee" auto-calc
 NO_REPORT = '(No report)'  # sentinel shown in the expense dialog's report dropdown = leave the expense unassigned
 NO_TEMPLATE = '(none)'  # leading entry in the Apply-template dropdown = no template chosen, and the way back out of one
@@ -1998,7 +2033,8 @@ class ExpenseDialog(tk.Toplevel):
         if cur==want:
             messagebox.showinfo('Card recognised', f'{why}.\n\nPayment type is already "{want}" — nothing to change.', parent=self); return
         personal = want==PAYMENT_TYPES[1]
-        msg=(f'{why}.\n\nThat is your "{label}" card, which you have set up as:\n    {want}\n\n'
+        is_rule = not q(card['last4']).strip()  # an any-network rule, not a specific card
+        msg=(f'{why}.\n\n' + ('' if is_rule else f'That is your "{label}" card, which you have set up as:\n    {want}\n\n')
              + ('This looks like money you paid yourself and need claiming back.\n\n' if personal else '')
              + f'Change the payment type from "{cur}" to "{want}"?')
         if messagebox.askyesno('Card recognised', msg, parent=self):
@@ -2516,8 +2552,9 @@ class CardsDialog(tk.Toplevel):
     def __init__(self, master, user_id=None):
         super().__init__(master); self.title('My cards'); self.transient(master); self.grab_set()
         self.user_id=user_id if user_id is not None else getattr(master,'current_user_id',lambda: None)()
-        ttk.Label(self,text='Cards you pay with. When you OCR a receipt, Concur Buddy looks for BOTH the network\n'
-                            'and the last four before deciding which card it was.',padding=(10,8,10,4)).pack(anchor='w')
+        ttk.Label(self,text='Cards you pay with. When you OCR a receipt, Concur Buddy matches the last four first.\n'
+                            'A row with NO last four is a rule for any card on that network (e.g. any Visa = personal),\n'
+                            'used only when the receipt names one network and none of your card numbers.',padding=(10,8,10,4)).pack(anchor='w')
         self.tree=ttk.Treeview(self,columns=('last4','network','pay','label','who'),show='headings',height=6)
         for c,w,t in [('last4',66,'Last 4'),('network',100,'Network'),('pay',240,'Means this payment type'),('label',140,'Your name for it'),('who',110,'Whose card')]:
             self.tree.heading(c,text=t); self.tree.column(c,width=w)
@@ -2530,7 +2567,7 @@ class CardsDialog(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         names={i:n for n,i in {r['name']:r['id'] for r in S.rows('SELECT id,name FROM users')}.items()}
         for r in cards_for(self.user_id):
-            self.tree.insert('','end',iid=str(r['id']),values=(r['last4'],r['network'],r['payment_type'],r['label'],
+            self.tree.insert('','end',iid=str(r['id']),values=(q(r['last4']).strip() or 'any',r['network'],r['payment_type'],r['label'],
                                                                names.get(r['user_id'],'everyone')))
     def _sel(self):
         f=self.tree.focus(); return S.row('SELECT * FROM cards WHERE id=?',(int(f),)) if f else None
@@ -2541,7 +2578,8 @@ class CardsDialog(tk.Toplevel):
         else: messagebox.showinfo('My cards','Pick a card first.',parent=self)
     def delete(self):
         r=self._sel()
-        if r and messagebox.askyesno('Delete card', f"Forget the card ending {r['last4']}?", parent=self):
+        what=(f"the card ending {r['last4']}" if q(r['last4']).strip() else f"the any-{r['network']} rule") if r else ''
+        if r and messagebox.askyesno('Delete card', f"Forget {what}?", parent=self):
             S.execute('DELETE FROM cards WHERE id=?',(r['id'],)); self.refresh()
 
 class CardEditor(tk.Toplevel):
@@ -2556,7 +2594,9 @@ class CardEditor(tk.Toplevel):
         self.last4=tk.StringVar(value=get('last4')); self.net=tk.StringVar(value=get('network','Visa'))
         self.pay=tk.StringVar(value=get('payment_type',PAYMENT_TYPES[1])); self.label=tk.StringVar(value=get('label'))
         ttk.Label(frm,text='Last 4 digits').grid(row=0,column=0,sticky='w',pady=3)
-        ttk.Entry(frm,textvariable=self.last4,width=8).grid(row=0,column=1,sticky='w')
+        l4=ttk.Frame(frm); l4.grid(row=0,column=1,sticky='w')
+        ttk.Entry(l4,textvariable=self.last4,width=8).pack(side='left')
+        ttk.Label(l4,text='  blank = any card on this network',foreground='#555').pack(side='left')
         ttk.Label(frm,text='Network').grid(row=1,column=0,sticky='w',pady=3)
         ttk.Combobox(frm,textvariable=self.net,values=list(CARD_NETWORKS),state='readonly',width=16).grid(row=1,column=1,sticky='w')
         ttk.Label(frm,text='Means this payment type').grid(row=2,column=0,sticky='w',pady=3)
@@ -2574,13 +2614,15 @@ class CardEditor(tk.Toplevel):
         self.bind('<Escape>', lambda e: self.destroy()); fit_to_screen(self, min_w=460, min_h=260)
     def save(self):
         d=re.sub(r'\D','',self.last4.get())[-4:]
-        if len(d)!=4: messagebox.showerror('Card','Enter the last 4 digits of the card.',parent=self); return
+        if len(d) not in (0,4):
+            messagebox.showerror('Card','Enter the last 4 digits, or leave it blank for "any card on this network".',parent=self); return
         uid=self.users.get(self.owner.get())  # None = everyone's
         if self.row: S.execute('UPDATE cards SET last4=?,network=?,payment_type=?,label=?,user_id=? WHERE id=?',
                                (d,self.net.get(),self.pay.get(),self.label.get().strip(),uid,self.row['id']))
         else:
             if S.row('SELECT 1 FROM cards WHERE last4=? AND network=? AND (user_id IS ? OR user_id=?)',(d,self.net.get(),uid,uid)):
-                messagebox.showerror('Card',f'A {self.net.get()} ending {d} is already set up for {self.owner.get()}.',parent=self); return
+                what=f'A {self.net.get()} ending {d}' if d else f'An any-{self.net.get()} rule'
+                messagebox.showerror('Card',f'{what} is already set up for {self.owner.get()}.',parent=self); return
             S.execute('INSERT INTO cards(last4,network,payment_type,label,user_id) VALUES(?,?,?,?,?)',
                       (d,self.net.get(),self.pay.get(),self.label.get().strip(),uid))
         self.on_saved(); self.destroy()

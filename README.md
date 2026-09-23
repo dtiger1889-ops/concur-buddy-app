@@ -513,13 +513,23 @@ Mastercard.
 Then when you **OCR** a receipt, the text is searched for that card, and a match offers to set the payment
 type for you — including telling you when it looks like money you will need claiming back.
 
-A card is only recognised when **both** the network and the last four appear. That is deliberate: the digits
-alone match invoice numbers and phone numbers, and the network alone matches every "we accept Visa" footer.
-The phrasings it copes with include *Visa ending in 1234*, *VISA ****1234*, *Mastercard&nbsp;&nbsp;*1234*,
-*4111 1111 1111 1234*, *Paid with Visa (1234)*, and a grocery slip that prints `CHIP CARD: MASTERCARD` several
-lines from the masked number. When the two sit close together it says so plainly; when they are far apart it
-still matches but tells you to double-check. If two of your own cards both appear, it changes nothing and says
-so rather than guessing.
+It looks in three steps, most certain first, and nothing changes until you say yes:
+
+1. **The network and your last four both appear.** The phrasings it copes with include *Visa ending in 1234*,
+   *VISA ****1234*, *Mastercard&nbsp;&nbsp;*1234*, *MASTER-1234*, *4111 1111 1111 1234*, *Paid with Visa (1234)*,
+   and a grocery slip that prints `CHIP CARD: MASTERCARD` several lines from the masked number.
+2. **Your last four appears masked** (*Credit Card, ***1234*) with no network named. A masked number is a card
+   by construction, so this is enough. A bare, unmasked number never is, because it could be an invoice or
+   phone number.
+3. **Only one network is named, and none of your card numbers appears.** Many receipts print just
+   `MASTERCARD` and a row of x's. For that, add a card with the **last four left blank**: it means *any card on
+   this network*. For example, "any Visa = personal" when every Visa you use is your own, and "any Mastercard
+   = corporate card" when your only Mastercard is the work one. A receipt that names several networks, like a
+   "we accept Visa, Mastercard" footer, never triggers one of these rules.
+
+If two of your own cards both match, it changes nothing and says so rather than guessing. A card set to one
+person is only ever matched against that person's receipts, and a person's own any-network rule beats one set
+for everyone.
 
 ### Asking someone for receipts
 Chasing a receipt usually means emailing whoever has it. **Ask for Receipts** (toolbar, or the right-click menu)
