@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.09.23.1
+Concur Buddy — version 2026.09.23.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -9,6 +9,14 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit.
+
+2026.09.23.2 — FIXES Open Receipt and OCR failing on a second PC. When your database is shared between two
+computers, a receipt attached on one of them could not be opened or read on the other ("file no longer
+exists"), even though the file had synced fine: the app looked for it under the OTHER computer's receipt
+folder instead of this one's. It now checks this computer's receipt folder first. OCR also finds Tesseract
+in its standard install folder, so a normal install no longer reports "install Tesseract" when it is
+already there. And card recognition reads two more real-world shapes: hotel folios that print
+"MASTER-1234", and phone photos where the scan drops the M from MASTERCARD.
 
 2026.09.23.1 — FIXES the Comment and Loose notes boxes on the expense window, which were squashed to a thin
 sliver with their labels cut in half. The expense form is taller than most screens, and when it didn't fit,

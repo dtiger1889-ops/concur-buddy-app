@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.09.23.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.09.23.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -210,7 +210,9 @@ def days_left_to_claim(e, d=None):
 # how sure we are.
 CARD_NETWORKS = {
     'Visa': r'visas?\b',
-    'Mastercard': r'master\s?card|\bmc\b|\bmcard\b',
+    # [mh]? = photo OCR drops or misreads the M ('ASTERCARD', 'HASTERCARD' on real slips, 2026-09-23); the bare
+    # 'MASTER' counts only when a 4-digit group follows it, the way hotel folios print 'MASTER-1234'.
+    'Mastercard': r'[mh]?aster\s?card|\bmc\b|\bmcard\b|\bmaster(?=[\s-]*\d{4}\b)',
     'Amex': r'american\s+express|\bamex\b|\bax\b',
     'Discover': r'discover(?:\s+card)?|\bdisc\b',
     'Diners': r'diners(?:\s+club)?',
@@ -222,6 +224,7 @@ LAST4_PATTERNS = [
     r'[*x#•·]{2,}[\s-]*(\d{4})\b',            # ****1234, xxxx-1234, ••••1234
     r'(?:\d{4}[\s-]){2,3}(\d{4})\b',           # 4111 1111 1111 1234
     r'\(\s*(\d{4})\s*\)',                      # (1234)
+    r'\b(?:master|visa|amex|mc)[\s-]+(\d{4})\b',  # MASTER-1234, VISA 1234 (hotel folios)
     r'[*x#]\s*(\d{4})\b',                      # *1234, x1234  (also catches "Mastercard\t*1234")
     r'(?:card|acct|account)\s*(?:no\.?|number|#)?\s*[:#]?\s*(?:[*x#•·\d]{4,}[\s-]*)?(\d{4})\b',
 ]
@@ -487,7 +490,10 @@ def resolve_attachment(stored):
     except Exception: return stored
     parts=_path_parts(stored)
     if not parts: return stored
-    anchors=[]
+    # THIS machine's receipt root comes first. It lives in local_settings.json; the DB's own receipt_root row is a
+    # legacy value written by whichever PC created the DB (a foreign C:\Users\<other-user>\... path elsewhere).
+    # Reading only the DB row meant every receipt attached on the other PC failed Open/OCR here (2026-09-23).
+    anchors=[get_local_setting('receipt_root')]
     try:
         rr=S.get_setting('receipt_root')
         if rr: anchors.append(rr)
@@ -1954,6 +1960,12 @@ class ExpenseDialog(tk.Toplevel):
                 try:
                     import pytesseract
                     from PIL import Image, ImageOps
+                    # The Windows installer does NOT put tesseract.exe on PATH, so a normal install still read as
+                    # "not installed". Fall back to the standard install folders when PATH has nothing.
+                    if not shutil.which('tesseract'):
+                        for cand in (Path(os.environ.get('ProgramFiles', r'C:\Program Files'))/'Tesseract-OCR'/'tesseract.exe',
+                                     Path(os.environ.get('LOCALAPPDATA', ''))/'Programs'/'Tesseract-OCR'/'tesseract.exe'):
+                            if cand.is_file(): pytesseract.pytesseract.tesseract_cmd=str(cand); break
                     # Normalize before OCR: exif_transpose honors phone-photo rotation, and convert('L')
                     # grayscales it (better for OCR) AND clears PIL's detected .format. That format reset is
                     # the fix for phone JPEGs PIL reports as MPO (multi-picture) or other: pytesseract only
