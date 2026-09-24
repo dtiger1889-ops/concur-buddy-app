@@ -64,8 +64,9 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
    tick *"Add Python to PATH"* during install). The app uses only Python's built-in libraries, so there is
    nothing else to install for the core features.
 2. **(Optional) OCR support** — only needed if you want the app to read text out of image/PDF receipts:
-   - Install [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki).
-   - `pip install pytesseract pillow pypdf`
+   - `pip install rapidocr-onnxruntime==1.4.4 pillow pypdf` (about 180 MB; no separate installer needed).
+   - Optional fallback: [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki) plus
+     `pip install pytesseract`. It is used only when RapidOCR isn't installed or reads nothing.
 3. **Launch it** — double-click **`run_concur_buddy.bat`**, or from a terminal run:
    ```
    python concur_buddy.py
@@ -241,7 +242,7 @@ opens your receipt-root folder.
 ### OCR (reading text out of a receipt)
 With OCR installed (see [Install](#install--run)), **OCR Receipt** / **OCR Invoice** pull the text out of the
 attached file into the *OCR / extracted text* box — handy for grabbing an amount or invoice number. Machine-readable
-PDFs are read directly (via `pypdf`); image-based files fall back to Tesseract. Without OCR installed, the box
+PDFs are read directly (via `pypdf`); photos are read by RapidOCR, with Tesseract as the fallback. Without OCR installed, the box
 shows a short note telling you what to install — the rest of the app works fine.
 
 ### Expense codes
@@ -630,7 +631,7 @@ back up `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` first.
 | Symptom | Fix |
 |---|---|
 | `python` is not recognized | Python isn't on your PATH. Reinstall Python 3.11+ with *"Add Python to PATH"* ticked, or run with the full path to `python.exe`. |
-| OCR box says "OCR unavailable" | Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and `pip install pytesseract pillow pypdf`. The rest of the app still works without it. |
+| OCR box says "OCR needs RapidOCR" | Run `pip install rapidocr-onnxruntime==1.4.4 pillow pypdf` and restart the app. The rest of the app still works without it. |
 | Attached file "no longer exists" when opening | The original was moved or deleted after attaching. Re-attach it. |
 | I want a clean slate | Close the app and delete `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` — it will be recreated empty on next launch. |
 

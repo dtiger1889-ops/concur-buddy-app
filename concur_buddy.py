@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.09.23.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.09.24.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -229,6 +229,58 @@ LAST4_PATTERNS = [
     r'(?:card|acct|account)\s*(?:no\.?|number|#)?\s*[:#]?\s*(?:[*x#•·\d]{4,}[\s-]*)?(\d{4})\b',
 ]
 CARD_PROXIMITY = 120  # characters between the network word and the digits before the match is called "loose"
+_RAPIDOCR = None   # built on first use: loading its models takes a second or two
+def rapidocr_text(path):
+    """Read a receipt photo with RapidOCR (the PP-OCR models on ONNX Runtime: CPU only, installs with pip alone).
+    On a test set of real phone-photo receipts it read the card on 4 of 9 and the total on 8 of 9, where
+    Tesseract managed 1 and 3. Raises ImportError when it isn't installed; returns '' when it finds no text."""
+    global _RAPIDOCR
+    from rapidocr_onnxruntime import RapidOCR
+    import numpy
+    from PIL import Image, ImageOps
+    if _RAPIDOCR is None: _RAPIDOCR = RapidOCR()
+    img = ImageOps.exif_transpose(Image.open(path)).convert('RGB')   # honour phone rotation, flatten MPO/alpha
+    lines, _ = _RAPIDOCR(numpy.array(img))
+    return '\n'.join(line[1] for line in (lines or []))
+def tesseract_text(path):
+    """Read an image with Tesseract (the fallback engine). Raises if pytesseract or the program is missing."""
+    import pytesseract
+    from PIL import Image, ImageOps
+    # The Windows installer does NOT put tesseract.exe on PATH, so a normal install still read as
+    # "not installed". Fall back to the standard install folders when PATH has nothing.
+    if not shutil.which('tesseract'):
+        for cand in (Path(os.environ.get('ProgramFiles', r'C:\Program Files'))/'Tesseract-OCR'/'tesseract.exe',
+                     Path(os.environ.get('LOCALAPPDATA', ''))/'Programs'/'Tesseract-OCR'/'tesseract.exe'):
+            if cand.is_file(): pytesseract.pytesseract.tesseract_cmd=str(cand); break
+    # Normalize before OCR: exif_transpose honors phone-photo rotation, and convert('L')
+    # grayscales it (better for OCR) AND clears PIL's detected .format. That format reset is
+    # the fix for phone JPEGs PIL reports as MPO (multi-picture) or other: pytesseract only
+    # accepts a fixed format whitelist and otherwise raises "Unsupported image format/type",
+    # even with Tesseract correctly installed.
+    return pytesseract.image_to_string(ImageOps.exif_transpose(Image.open(path)).convert('L'))
+OCR_INSTALL_HINT = "OCR needs RapidOCR: run  pip install rapidocr-onnxruntime==1.4.4  and restart Concur Buddy (see README setup)."
+def ocr_image_text(path):
+    """The OCR engine selector. Photos go to RapidOCR first; Tesseract runs when RapidOCR isn't installed, fails,
+    or reads nothing. PDFs without a text layer still go straight to Tesseract, as before (known bug: it can't
+    open a PDF; see ROADMAP). Always returns text for the OCR box, including a plain reason when nothing worked."""
+    rapid_ran = False
+    if not path.lower().endswith('.pdf'):
+        try:
+            text = rapidocr_text(path); rapid_ran = True
+            if text.strip(): return text
+        except Exception:
+            pass   # not installed, or this image beat it: Tesseract gets a go below
+    try:
+        return tesseract_text(path)
+    except ImportError:
+        return "No text found in this image." if rapid_ran else OCR_INSTALL_HINT
+    except Exception as e:
+        # A missing Tesseract binary arrives as pytesseract.TesseractNotFoundError; anything else
+        # (an image that still can't be read) lands here too. Report the real reason instead of
+        # telling the user to install something they already have.
+        if e.__class__.__name__=='TesseractNotFoundError':
+            return "No text found in this image." if rapid_ran else OCR_INSTALL_HINT
+        return f"Couldn't read text from this file: {e}"
 def cards_for(user_id):
     """That user's cards, plus any left as everyone's. Two people's cards are different cards — matching
     one person's receipt against another's personal Visa would set the wrong payment type on their
@@ -1991,32 +2043,7 @@ class ExpenseDialog(tk.Toplevel):
                 try: from pypdf import PdfReader
                 except Exception: from PyPDF2 import PdfReader
                 text='\n'.join([(page.extract_text() or '') for page in PdfReader(p).pages])
-            if not text:
-                try:
-                    import pytesseract
-                    from PIL import Image, ImageOps
-                    # The Windows installer does NOT put tesseract.exe on PATH, so a normal install still read as
-                    # "not installed". Fall back to the standard install folders when PATH has nothing.
-                    if not shutil.which('tesseract'):
-                        for cand in (Path(os.environ.get('ProgramFiles', r'C:\Program Files'))/'Tesseract-OCR'/'tesseract.exe',
-                                     Path(os.environ.get('LOCALAPPDATA', ''))/'Programs'/'Tesseract-OCR'/'tesseract.exe'):
-                            if cand.is_file(): pytesseract.pytesseract.tesseract_cmd=str(cand); break
-                    # Normalize before OCR: exif_transpose honors phone-photo rotation, and convert('L')
-                    # grayscales it (better for OCR) AND clears PIL's detected .format. That format reset is
-                    # the fix for phone JPEGs PIL reports as MPO (multi-picture) or other: pytesseract only
-                    # accepts a fixed format whitelist and otherwise raises "Unsupported image format/type",
-                    # even with Tesseract correctly installed.
-                    text=pytesseract.image_to_string(ImageOps.exif_transpose(Image.open(p)).convert('L'))
-                except ImportError:
-                    text="OCR needs the pytesseract + Pillow packages installed (see README setup)."
-                except Exception as e:
-                    # A missing Tesseract binary arrives as pytesseract.TesseractNotFoundError; anything else
-                    # (an image that still can't be read) lands here too. Report the real reason instead of
-                    # telling the user to install something they already have.
-                    if e.__class__.__name__=='TesseractNotFoundError':
-                        text="OCR needs the Tesseract program. Install Tesseract for Windows (see README) and restart Concur Buddy."
-                    else:
-                        text=f"Couldn't read text from this file: {e}"
+            if not text: text=ocr_image_text(p)
         except Exception as e: text=f"Text extraction failed: {e}"
         self.vars['ocr_text'].delete('1.0','end'); self.vars['ocr_text'].insert('1.0', text)
         self.detect_payment_card(text)
