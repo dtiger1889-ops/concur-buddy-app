@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.09.24.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.07.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -362,7 +362,7 @@ def detect_card(text, cards):
 CC_FEE_RATE = 0.03  # industry-standard credit-card surcharge used by the "Amount after CC fee" auto-calc
 NO_REPORT = '(No report)'  # sentinel shown in the expense dialog's report dropdown = leave the expense unassigned
 NO_TEMPLATE = '(none)'  # leading entry in the Apply-template dropdown = no template chosen, and the way back out of one
-NEW_REPORT = '(new report from the name)'  # sentinel in the importer's merge picker = don't join an existing report
+NEW_REPORT = '(none)'  # sentinel in the importer's merge picker = don't join an existing report
 
 def report_choice_label(r):
     """How a report reads in a one-line picker. A filed report keeps its name but says so, because
@@ -390,7 +390,11 @@ TEMPLATE_SEED = [
     ('Calendly subscription', {'vendor': 'Calendly', 'business_purpose': 'Scheduling software', 'payment_type': PAYMENT_TYPES[0]}),
     ('Doodle subscription', {'vendor': 'Doodle', 'business_purpose': 'Productivity software', 'payment_type': PAYMENT_TYPES[0]}),
     ('Staples office supplies', {'vendor': 'Staples', 'business_purpose': 'Office supplies', 'payment_type': PAYMENT_TYPES[0]}),
+    ('Amazon Business office supplies', {'vendor': 'Amazon Business', 'business_purpose': 'Office supplies', 'payment_type': PAYMENT_TYPES[0]}),
 ]
+# Seed templates added after the v2 top-up. Existing databases get just these once (seed_templates_v3), so a
+# default the user deleted earlier stays deleted.
+TEMPLATE_SEED_V3 = {'Amazon Business office supplies'}
 # Recurring vendors pre-loaded on first run so they autocomplete and appear in the Vendor glossary without
 # being typed by hand. Name only — the app learns each vendor's usual expense code the first time you file
 # with it. (The public build ships this list empty; add your own recurring vendors here or in the glossary.)
@@ -922,6 +926,11 @@ class Store:
                     self.execute('INSERT INTO templates(name,vendor,fields,is_default) VALUES(?,?,?,1)', (name, fields.get('vendor',''), json.dumps(fields)))
         if self.get_setting('seed_templates_v2') is None:
             self.set_setting('seed_templates_v2', '1')
+        if self.get_setting('seed_templates_v3') is None:
+            for name, fields in TEMPLATE_SEED:
+                if name in TEMPLATE_SEED_V3 and not self.row('SELECT id FROM templates WHERE name=?', (name,)):
+                    self.execute('INSERT INTO templates(name,vendor,fields,is_default) VALUES(?,?,?,1)', (name, fields.get('vendor',''), json.dumps(fields)))
+            self.set_setting('seed_templates_v3', '1')
         # One-time seed of known recurring vendors, so they exist (and autocomplete) even in a DB created
         # before this list. Guarded by a flag so a vendor the user later deletes stays gone — same contract
         # as the template seed above.
@@ -1108,8 +1117,7 @@ FIELD_LABELS = {'_expense_type': 'Expense type', 'transaction_date': 'Transactio
                 'city': 'City', 'state': 'State', 'country': 'Country', 'comment': 'Comment', 'attendees': 'Attendees',
                 'is_vendor_invoice': 'Is a vendor invoice', 'personal_no_reimburse': 'Personal / no reimburse',
                 'missing_receipt_ack': 'Missing receipt acknowledgment'}
-MATCH_DAY_WINDOW = 31  # how far apart two dates can be before an amount match needs the name to back it up
-MATCH_NAME_FLOOR = 0.5  # …or how alike the two vendor strings must look instead
+MATCH_DAY_WINDOW = 31  # how far apart two dates can be and still be PROPOSED as the same charge
 def _col_index(ref):
     n = 0
     for ch in ref: n = n * 26 + (ord(ch) - 64)
@@ -1214,6 +1222,30 @@ def match_concur_row(row, expenses, taken=()):
            for e in expenses if e['id'] not in taken and round(float(e['amount'] or 0) * 100) == cents]
     out.sort(key=lambda t: (t[1], -t[2]))
     return out
+def propose_matches(rows, expenses):
+    """For every imported row: (candidates, index of the proposed merge or None for "add as new").
+
+    A same-amount row is only PROPOSED when its date is within MATCH_DAY_WINDOW (card post dates lag the
+    transaction; a statement cycle is about a month). A lookalike vendor name alone is not enough: a monthly
+    subscription is the same vendor at the same amount every month, so the name can't tell this month's
+    charge from last month's already-filed one. For the same reason an expense already marked Filed is only
+    proposed on the exact same date (re-importing a report you filed); a month apart is the next charge.
+    Pairs are claimed closest-date-first across the WHOLE file,
+    not in file order, so two identical charges each land on their own nearest expense. One staged expense
+    absorbs at most one row; anything left over defaults to new, with its candidates one click away."""
+    ranked = [match_concur_row(r, expenses) for r in rows]
+    pairs = sorted((gap, -sim, i, e['id']) for i, cands in enumerate(ranked)
+                   for e, gap, sim in cands if gap <= MATCH_DAY_WINDOW and (gap == 0 or e['status'] != 'Filed'))
+    claimed = {}; taken = set()
+    for _, _, i, eid in pairs:
+        if i in claimed or eid in taken: continue
+        claimed[i] = eid; taken.add(eid)
+    out = []
+    for i, cands in enumerate(ranked):
+        mine = claimed.get(i)
+        cands = [c for c in cands if c[0]['id'] == mine or c[0]['id'] not in taken]  # never offer another row's match
+        out.append((cands, next((k for k, c in enumerate(cands) if c[0]['id'] == mine), None)))
+    return out
 def merge_plan(row, exp):
     """What merging `row` into staged expense `exp` would do, as (card, conflicts, fills) — each a list of
     (field, staged_value, export_value):
@@ -1257,6 +1289,46 @@ def apply_field(vals, row, field):
         for f in TYPE_PAIR: vals[f] = row.get(f, '')
     else: vals[field] = row[field]
     return vals
+# Template fields an import may fill. Vendor/amount/status describe THIS charge, so they never come from a template.
+IMPORT_TEMPLATE_SKIP = {'vendor', 'amount', 'amount_after_fee', 'status'}
+# Leading card-processor tags ('TST* CAFE', 'SQ *SHOP', 'WWW.DOODLE.COM') that come before the real name.
+CARD_PREFIX_WORDS = {'www', 'tst', 'sq', 'sp', 'fsp', 'in', 'py', 'pp', 'paypal'}
+def template_for_vendor(vendor):
+    """The saved template whose vendor names this card-feed vendor, or None. The card descriptor carries the
+    name plus noise ('AMAZON MKTPL*AB12CD34', 'UBER *TRIP', 'WWW.DOODLE.COM', 'SALT AND PEPPER CAFE' for
+    'Salt & Pepper Cafe', 'ACMEEVENTS' for 'Acme Events'), so the match is whole words from the start, either
+    way round, case/punctuation/'and' blind, or the same letters with the spaces squeezed out. The longest
+    template vendor wins a tie."""
+    def norm(s):
+        w = [x for x in re.sub(r'[^a-z0-9]+', ' ', q(s).lower()).split() if x != 'and']
+        while len(w) > 1 and w[0] in CARD_PREFIX_WORDS: w = w[1:]
+        return ' '.join(w)
+    v = norm(vendor); best = None
+    if not v: return None
+    for t in S.get_templates():
+        tv = norm(t['vendor'])
+        if len(tv) < 3: continue
+        if not ((v + ' ').startswith(tv + ' ') or (tv + ' ').startswith(v + ' ')
+                or (' ' in tv and v.replace(' ', '').startswith(tv.replace(' ', '')))): continue
+        if best is None or len(tv) > len(norm(best['vendor'])): best = t
+    return best
+def template_fills(row, exp=None):
+    """(template name, {field: value}) — what a known vendor's template adds to an imported row. It only
+    fills fields that would otherwise be BLANK on both sides (the export's and, on an update, the staged
+    expense's), so it never overrules Concur or anything already typed. (None, {}) when no template fits."""
+    t = template_for_vendor(row.get('vendor'))
+    if not t: return None, {}
+    # An export column that is present counts even when it says No (0); a staged 0 is just the default.
+    in_row = lambda f: row.get(f) not in ('', None)
+    in_exp = lambda f: exp is not None and f in exp.keys() and q(exp[f]).strip() not in ('', '0', 'None')
+    fills = {}
+    for f, val in S.template_fields(t['name']).items():
+        if f in IMPORT_TEMPLATE_SKIP or q(val).strip() in ('', '0', 'None'): continue
+        if f in TYPE_PAIR:  # a pair: the template's type only goes in when neither side has a type at all
+            if any(in_row(g) or in_exp(g) for g in TYPE_PAIR): continue
+        elif in_row(f) or in_exp(f): continue
+        fills[f] = val
+    return t['name'], fills
 
 # --- Expense-type search engine -------------------------------------------------------------------
 # The whole point of the app is FINDING the right expense type when you don't know its official name.
@@ -2694,7 +2766,7 @@ class ImportRowDialog(tk.Toplevel):
         bits=[q(r.get('transaction_date')), q(r.get('vendor')), money_part(r.get('amount'))]
         if r.get('expense_type_code'): bits.append(q(r.get('expense_type_code')))
         head=ttk.Frame(self,padding=(10,8,10,2)); head.pack(fill='x')
-        ttk.Label(head,text='Expense from the export',foreground='#555').pack(anchor='w')
+        ttk.Label(head,text='This expense, as Concur has it',foreground='#555').pack(anchor='w')
         ttk.Label(head,text='   '.join(bits),font=self.bold,wraplength=560).pack(anchor='w')
         pick=ttk.Frame(self,padding=(10,6,10,0)); pick.pack(fill='x')
         ttk.Label(pick,text='Update which expense?',font=self.bold).pack(anchor='w')
@@ -2708,8 +2780,8 @@ class ImportRowDialog(tk.Toplevel):
         self.fields=ttk.Frame(self,padding=(10,8)); self.fields.pack(fill='both',expand=True)
         bar=FlowBar(self,padding=8); bar.pack(side='bottom',fill='x')
         Tooltip(bar.button('Done',self.ok),'Keep these choices and go back to the list. Nothing is written until you press Apply there.')
-        Tooltip(bar.button('Skip this row',self.skip),'Leave this export row out of the import entirely.')
-        Tooltip(bar.button('Cancel',self.destroy),'Close without changing this row.')
+        Tooltip(bar.button('Ignore this row',self.skip),'Leave this row out of the import. Nothing is created or changed.')
+        Tooltip(bar.button('Cancel',self.destroy),'Close without changing anything you chose for this row.')
         self.bind('<Escape>', lambda e: self.destroy())
         self.build_fields(); fit_to_screen(self, min_w=620, min_h=420)
     def _selected_candidate(self):
@@ -2720,20 +2792,20 @@ class ImportRowDialog(tk.Toplevel):
         self.choice_vars={}
         i=self._selected_candidate()
         if i is None:
-            ttk.Label(self.fields,text='It will be added as a new expense, exactly as the export has it.').grid(row=0,column=0,sticky='w')
+            ttk.Label(self.fields,text='It will be added as a new expense, exactly as Concur has it.').grid(row=0,column=0,sticky='w')
             return
         rows=plan_rows(self.row, self.plan['candidates'][i][0])
         if not rows:
-            ttk.Label(self.fields,text='Every field already agrees — updating changes nothing, it just ties the two together.').grid(row=0,column=0,sticky='w')
+            ttk.Label(self.fields,text='Both copies already agree, so updating changes no fields. It just links the two.').grid(row=0,column=0,sticky='w')
             return
         decide=[r for r in rows if r[4]=='both']
         banner=tk.Label(self.fields,padx=8,pady=4,anchor='w',
-                        text=(f"  {len(decide)} field{'' if len(decide)==1 else 's'} need{'s' if len(decide)==1 else ''} you to pick a winner"
-                              if decide else '  Nothing to decide — every field follows the rules below'),
+                        text=(f"  Pick which value to keep for {len(decide)} field{'' if len(decide)==1 else 's'} (marked DECIDE)"
+                              if decide else '  Nothing to decide. The changes below happen when you press Apply.'),
                         background='#fff3cd' if decide else '#e6f4ea', foreground='#4a3a00' if decide else '#14532d')
         banner.grid(row=0,column=0,columnspan=5,sticky='ew',pady=(0,6))
         for c,w in enumerate((62, 124, self.WRAP, self.WRAP, 122)): self.fields.columnconfigure(c,minsize=w)
-        for c,t in enumerate(('','Field','In Concur Buddy','In this export','Use')):
+        for c,t in enumerate(('','Field','In Concur Buddy','In Concur','Keep')):
             ttk.Label(self.fields,text=t,font=self.bold).grid(row=1,column=c,sticky='w',padx=(0,10),pady=(0,2))
         ttk.Separator(self.fields,orient='horizontal').grid(row=2,column=0,columnspan=5,sticky='ew',pady=(0,4))
         # One chip per row says what KIND of row it is, so "what do I actually have to do here" is a glance,
@@ -2748,22 +2820,23 @@ class ImportRowDialog(tk.Toplevel):
             ttk.Label(self.fields,text=old_v or '—',wraplength=self.WRAP,foreground='#444').grid(row=n,column=2,sticky='nw',padx=(0,10),pady=3)
             ttk.Label(self.fields,text=new_v or '—',wraplength=self.WRAP,foreground='#444').grid(row=n,column=3,sticky='nw',padx=(0,10),pady=3)
             if why!='both':
-                ttk.Label(self.fields,text='the export',foreground='#777').grid(row=n,column=4,sticky='nw',pady=3)
+                ttk.Label(self.fields,text='Concur',foreground='#777').grid(row=n,column=4,sticky='nw',pady=3)
                 continue
             v=tk.StringVar(value=self.plan['choices'].get(f,default)); self.choice_vars[f]=v
             box=ttk.Frame(self.fields); box.grid(row=n,column=4,sticky='nw',pady=2)
             ttk.Radiobutton(box,text='Mine',variable=v,value='buddy').pack(side='left')
-            ttk.Radiobutton(box,text='Export',variable=v,value='concur').pack(side='left',padx=(6,0))
+            ttk.Radiobutton(box,text='Concur',variable=v,value='concur').pack(side='left',padx=(6,0))
         end=len(rows)+3
         ttk.Separator(self.fields,orient='horizontal').grid(row=end,column=0,columnspan=5,sticky='ew',pady=(6,4))
         if self.choice_vars:
             allbar=ttk.Frame(self.fields); allbar.grid(row=end+1,column=0,columnspan=5,sticky='w')
             n=len(self.choice_vars)
             ttk.Label(allbar,text=('This choice:' if n==1 else f'All {n} choices:')).pack(side='left',padx=(0,6))
-            ttk.Button(allbar,text='Take the export',width=16,command=lambda:self.set_all('concur')).pack(side='left')
+            ttk.Button(allbar,text='Use Concur\'s',width=16,command=lambda:self.set_all('concur')).pack(side='left')
             ttk.Button(allbar,text='Keep mine',width=12,command=lambda:self.set_all('buddy')).pack(side='left',padx=4)
-        note=('LOCKED = the card feed owns it; Concur lets neither side edit it, so the export wins.    '
-              'FILL = blank here, so the export fills it in.    DECIDE = both sides have a value.')
+        note=('LOCKED: Concur greys these out because they come from the card feed (the charge as the card '
+              'company reported it), so Concur\'s copy is used.    FILL: empty in Concur Buddy, so Concur\'s value '
+              'fills it in.    DECIDE: both copies have a value and they differ. You choose.')
         ttk.Label(self.fields,text=note,wraplength=560,foreground='#555').grid(row=end+2,column=0,columnspan=5,sticky='w',pady=(6,0))
     def set_all(self, side):
         for v in self.choice_vars.values(): v.set(side)
@@ -2793,21 +2866,12 @@ class ConcurImportDialog(tk.Toplevel):
         if not rows: raise ValueError('no expense rows found in that file')
         self.unknown=unknown
         staged=S.rows('SELECT * FROM expenses WHERE user_id=? ORDER BY transaction_date DESC',(user_id,))
-        self.plans=[]; taken=set()
-        for r in rows:
-            cands=match_concur_row(r, staged, taken)
-            # A same-amount row is only PROPOSED as a merge when something corroborates it: a nearby date
-            # (card post dates lag the transaction, and a statement cycle is about a month) or a vendor name
-            # that actually looks alike. Otherwise it defaults to "add as new" — the candidate is still
-            # listed, one click away, so a coincidental amount match can't quietly rewrite the wrong row.
-            propose=bool(cands) and (cands[0][1]<=MATCH_DAY_WINDOW or cands[0][2]>=MATCH_NAME_FLOOR)
-            plan={'row':r,'candidates':cands,'cand_index':0 if cands else None,
-                  'action':'merge' if propose else 'new','choices':{},'reviewed':False}
-            if propose: taken.add(cands[0][0]['id'])  # one staged expense can only absorb one export row
-            self.plans.append(plan)
+        self.plans=[{'row':r,'candidates':cands,'cand_index':pick if pick is not None else (0 if cands else None),
+                     'action':'new' if pick is None else 'merge','choices':{},'reviewed':False}
+                    for r,(cands,pick) in zip(rows, propose_matches(rows, staged))]
         top=ttk.Frame(self,padding=(8,6)); top.pack(fill='x')
-        ttk.Label(top,text=f"{len(rows)} expenses in {Path(path).name}   ·   matching against "
-                           f"{len(staged)} staged for this user").pack(anchor='w')
+        ttk.Label(top,text=f"{len(rows)} expense{'' if len(rows)==1 else 's'} in {Path(path).name}, checked against the "
+                           f"{len(staged)} this user already has in Concur Buddy").pack(anchor='w')
         # The report row. Two controls, because there are two different jobs: NAME the report (Concur's own
         # name is the canonical one, so it is prefilled from the export) and, optionally, say that this import
         # belongs to a report already staged here under a name he typed himself before Concur had one.
@@ -2815,17 +2879,17 @@ class ConcurImportDialog(tk.Toplevel):
         namebox=ttk.LabelFrame(rep,text=' Report name (from Concur) ',padding=(6,2))
         self.report_name=tk.StringVar(value=report_name)
         ttk.Entry(namebox,textvariable=self.report_name,width=30).pack(side='left')
-        ttk.Label(namebox,text=' blank = leave them loose',foreground='#555').pack(side='left')
+        ttk.Label(namebox,text=' leave blank for no report',foreground='#555').pack(side='left')
         rep.attach(namebox)
-        mergebox=ttk.LabelFrame(rep,text=' Existing report to merge into ',padding=(6,2))
+        mergebox=ttk.LabelFrame(rep,text=' Or add them to a report you already have ',padding=(6,2))
         self.existing=S.rows("SELECT id,name,status FROM reports WHERE user_id=? ORDER BY (status='Filed'), name",(user_id,))
         self.merge_choice=tk.StringVar(value=NEW_REPORT)
         self.merge_labels={report_choice_label(r):r['id'] for r in self.existing}
         cb=ttk.Combobox(mergebox,textvariable=self.merge_choice,width=26,state='readonly',
                         values=[NEW_REPORT]+list(self.merge_labels))
         cb.pack(side='left'); cb.bind('<<ComboboxSelected>>', lambda e: self._merge_note())
-        Tooltip(cb,"Pick the report you already staged these under here. Its expenses stay put — this import "
-                   "just joins it instead of creating a second report for the same trip.")
+        Tooltip(cb,"Already started this trip as a report in Concur Buddy under your own name? Pick it. Its "
+                   "expenses stay where they are, and the import joins it instead of making a second report for the same trip.")
         self.rename_var=tk.IntVar(value=1)
         ttk.Checkbutton(mergebox,text="Rename it to Concur's name",variable=self.rename_var,
                         command=self._merge_note).pack(side='left',padx=(6,0))
@@ -2835,25 +2899,29 @@ class ConcurImportDialog(tk.Toplevel):
         self.merge_note=tk.StringVar()
         ttk.Label(self,textvariable=self.merge_note,padding=(8,0),foreground='#1a3d7c',wraplength=880,justify='left').pack(anchor='w')
         self._merge_note()
+        # Saved templates fill blanks on known vendors automatically, so the screen says so up front rather
+        # than leaving him to discover a purpose he never typed after Apply.
+        self.tpl_note=tk.StringVar()
+        ttk.Label(self,textvariable=self.tpl_note,padding=(8,0),foreground='#1e6b34',wraplength=880,justify='left').pack(anchor='w')
         # Every button says what it acts on, and each carries a hover hint — the three middle ones only
         # retag the rows you have selected, which is not guessable from a bare verb.
         # Buttons live in LABELLED boxes, not behind hover text: which rows a button acts on has to be
         # readable at a glance, and a tooltip you have to discover isn't that. Tooltips stay as detail.
         bar=FlowBar(self,padding=(8,4)); bar.pack(fill='x')
         rowbox=ttk.LabelFrame(bar,text=' Selected row(s) ',padding=(6,2))
-        for txt,cmd,tip in [('Review…',self.review,'Open the selected row: change which staged expense it updates, and settle any field the two sides disagree on. Double-clicking a row does the same.'),
-                            ('Update existing',lambda:self.set_action('merge'),'The selected row is an expense you ALREADY have here — fold Concur\'s copy into it rather than ending up with two. Keeps your receipt, notes and status. No effect on a row with no amount match.'),
-                            ('Add as new',lambda:self.set_action('new'),'You do NOT already have this one — create a fresh expense from it. Use this when the suggested match is wrong.'),
+        for txt,cmd,tip in [('Review…',self.review,'Open the selected row to choose which of your expenses it updates, and to settle any field where the two copies differ. Double-clicking a row does the same.'),
+                            ('Update existing',lambda:self.set_action('merge'),'Use this when you already have this expense in Concur Buddy. Concur\'s details go into your copy, so you don\'t end up with two. Your receipt, notes and status stay. Does nothing to a row when none of your expenses has the same amount.'),
+                            ('Add as new',lambda:self.set_action('new'),'You don\'t have this one in Concur Buddy yet: make a new expense from it. Use this when the suggested match is wrong.'),
                             ('Ignore',lambda:self.set_action('skip'),'Leave the selected row(s) out entirely — nothing created, nothing changed.')]:
             b=ttk.Button(rowbox,text=txt,command=cmd); b.pack(side='left',padx=2); Tooltip(b,tip)
         bar.attach(rowbox)
         allbox=ttk.LabelFrame(bar,text=' Whole import ',padding=(6,2))
-        for txt,cmd,tip in [('Apply',self.apply,'Carry out every row\'s "What will happen". This is the only step that writes anything.'),
+        for txt,cmd,tip in [('Apply',self.apply,'Do what the "What will happen" column says, for every row. Nothing is saved until you press this.'),
                             ('Cancel',self.destroy,'Close and import nothing.')]:
             b=ttk.Button(allbox,text=txt,command=cmd); b.pack(side='left',padx=2); Tooltip(b,tip)
         bar.attach(allbox)
         self.tree=ttk.Treeview(self,columns=('ok','date','vendor','amount','type','action','detail'),show='headings',selectmode='extended')
-        for c,w,t in [('ok',34,'✓'),('date',90,'Date'),('vendor',175,'Vendor (export)'),('amount',80,'Amount'),
+        for c,w,t in [('ok',34,'✓'),('date',90,'Date'),('vendor',175,'Vendor (from Concur)'),('amount',80,'Amount'),
                       ('type',185,'Expense type'),('action',180,'What will happen'),('detail',330,'Notes')]:
             self.tree.heading(c,text=t); self.tree.column(c,width=w,anchor='center' if c=='ok' else 'w')
         # Colour carries the one thing that matters at a glance: does this row still want something from you?
@@ -2863,20 +2931,27 @@ class ConcurImportDialog(tk.Toplevel):
         self.tree.tag_configure('skip',  background='#f1f3f4', foreground='#80868b')
         self.tree.pack(fill='both',expand=True,padx=8,pady=(6,2)); self.tree.bind('<Double-1>', lambda e: self.review())
         legend=ttk.Frame(self,padding=(8,0)); legend.pack(fill='x')
-        for text,bg in [('needs a decision','#fff3cd'),('ready to merge','#e6f4ea'),('new expense','#e8f0fe'),('skipped','#f1f3f4')]:
+        for text,bg in [('needs a decision','#fff3cd'),('will update','#e6f4ea'),('new expense','#e8f0fe'),('ignored','#f1f3f4')]:
             tk.Label(legend,text='   ',background=bg,relief='solid',borderwidth=1,width=3).pack(side='left',pady=1)
             ttk.Label(legend,text=f' {text}   ',foreground='#555').pack(side='left')
-        hint=('Every row does one of three things:   UPDATE an expense you already have here (your receipt, notes '
-              'and status stay) · ADD it as a new expense · IGNORE it.\n'
-              'Nothing is written until you press Apply.   ✓ = you have been through that row.')
-        if unknown: hint+=f"\nColumns with no field here are kept as notes on new expenses: {', '.join(unknown[:6])}"
+        hint=('Each row does one of three things:   UPDATE an expense you already have in Concur Buddy (your receipt, '
+              'notes and status stay) · ADD it as a new expense · IGNORE it.\n'
+              'Nothing is saved until you press Apply.   A ✓ means you have reviewed that row.')
+        if unknown: hint+=f"\nColumns Concur Buddy has no field for are saved in the notes of new expenses: {', '.join(unknown[:6])}"
         ttk.Label(self,text=hint,padding=(8,2),foreground='#555',wraplength=900).pack(anchor='w',side='bottom')
         self.bind('<Escape>', lambda e: self.destroy())
         self.refresh(); fit_to_screen(self, min_w=980, min_h=500)
+    def _template_fills(self, p):
+        """The template fill for one plan as it stands now (an update fills only what the staged copy lacks)."""
+        if p['action']=='skip': return None, {}
+        return template_fills(p['row'], p['candidates'][p['cand_index']][0] if p['action']=='merge' else None)
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
+        used={}
         for i,p in enumerate(self.plans):
             r=p['row']; undecided=0
+            tname,tfill=self._template_fills(p)
+            if tfill: used[tname]=used.get(tname,0)+1
             # The Notes cell is the only place that says WHY a row proposes what it proposes, so it is written
             # as short sentences, not counters-and-jargon: "1 from card" told him nothing he could act on.
             plural=lambda n,one,many: f"{n} {one if n==1 else many}"
@@ -2889,21 +2964,29 @@ class ConcurImportDialog(tk.Toplevel):
                                           else 'you settled '+plural(undecided,'field','fields'))
                 n_card=sum(1 for _,_,_,_,why in rows if why=='card'); n_fill=sum(1 for _,_,_,_,why in rows if why=='blank')
                 if n_card: bits.append(plural(n_card,'field','fields')+" taken from Concur's card feed")
-                if n_fill: bits.append(plural(n_fill,'blank','blanks')+' here will be filled in')
-                if len(p['candidates'])>1: bits.append(f"{len(p['candidates'])} expenses here could be this one")
+                if n_fill: bits.append(plural(n_fill,'empty field','empty fields')+' will be filled in from Concur')
+                if len(p['candidates'])>1: bits.append(f"{len(p['candidates'])} expenses in Concur Buddy could be this one")
                 if r.get('_receipt_in_concur') is False and (e['receipt_path'] or e['invoice_path']):
                     bits.append('you have the receipt, Concur does not')
                 detail=' · '.join(bits) or 'both copies already agree — this just links them'
                 tag='needs' if (undecided and not p.get('reviewed')) else 'ready'
             elif p['action']=='new':
                 act='Add as a new expense'; tag='new'
-                detail=('nothing staged here has this amount' if not p['candidates']
-                        else plural(len(p['candidates']),'expense here has','expenses here have')+' this amount — Review to link one')
+                detail=('no expense in Concur Buddy has this amount' if not p['candidates']
+                        else plural(len(p['candidates']),'expense in Concur Buddy has','expenses in Concur Buddy have')+' this amount — use Review… to link one')
             else: act='Ignore — nothing happens'; detail='left out of this import'; tag='skip'
+            if tfill:
+                names=', '.join(dict.fromkeys(FIELD_LABELS.get('_expense_type' if f in TYPE_PAIR else f, f).lower() for f in tfill))
+                detail=f'Template "{tname}" fills in {names} · '+detail
             etype=' '.join(x for x in (q(r.get('expense_type_code')), q(r.get('expense_type_label'))) if x)
             self.tree.insert('','end',iid=str(i),tags=(tag,),
                              values=('✓' if p.get('reviewed') else '', q(r.get('transaction_date')), q(r.get('vendor')),
                                      money_part(r.get('amount')), etype, act, detail))
+        n=sum(used.values())
+        self.tpl_note.set('' if not n else
+                          f"Your saved templates will fill in blank fields on {n} row{'' if n==1 else 's'}: "
+                          + ', '.join(f'"{k}"' + (f' ({c} rows)' if c>1 else '') for k,c in used.items())
+                          + ". They never change anything Concur or you already filled in.")
     def _merge_target(self):
         """The existing report this import should join, or None when it should find/create one by name."""
         return self.merge_labels.get(self.merge_choice.get())
@@ -2912,7 +2995,7 @@ class ConcurImportDialog(tk.Toplevel):
         that it must never be a surprise discovered after Apply."""
         rid=self._merge_target(); name=self.report_name.get().strip()
         if rid is None:
-            self.merge_note.set('' if name else 'These expenses will be left loose — no report.'); return
+            self.merge_note.set('' if name else 'These expenses will not go into any report.'); return
         cur=q(S.scalar('SELECT name FROM reports WHERE id=?',(rid,)))
         if name and self.rename_var.get() and name!=cur:
             note=f'Joining "{cur}" — and renaming it to "{name}", since Concur\'s name is the real one.'
@@ -2947,10 +3030,12 @@ class ConcurImportDialog(tk.Toplevel):
         elif name:
             got=S.row('SELECT id FROM reports WHERE user_id=? AND name=?',(self.user_id,name))
             rid=got['id'] if got else S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
-        merged=new=skipped=codes=0; flags=[]
+        merged=new=skipped=codes=templated=0; flags=[]
         for p in self.plans:
             r=p['row']
             if p['action']=='skip': skipped+=1; continue
+            _,tfill=self._template_fills(p)  # computed before any write, against the row as shown on screen
+            templated+=bool(tfill)
             if r.get('expense_type_code') and r.get('expense_type_label'):
                 if not S.row('SELECT 1 FROM expense_codes WHERE code=? AND name=?',(r['expense_type_code'],r['expense_type_label'])):
                     S.execute('INSERT OR IGNORE INTO expense_codes(code,name) VALUES(?,?)',(r['expense_type_code'],r['expense_type_label'])); codes+=1
@@ -2960,6 +3045,7 @@ class ConcurImportDialog(tk.Toplevel):
                 for f,_,_,default,why in plan_rows(r,exp):
                     # Only a both-sides-filled row is the user's call; card-fed and blank rows follow the rule.
                     if why!='both' or p['choices'].get(f,default)=='concur': apply_field(vals, r, f)
+                for f,val in tfill.items(): vals.setdefault(f,val)
                 if rid and exp['report_id'] is None: vals['report_id']=rid  # never move one already in a report
                 if vals:
                     S.execute('UPDATE expenses SET '+','.join(f'{f}=?' for f in vals)+' WHERE id=?', tuple(vals.values())+(exp['id'],))
@@ -2973,14 +3059,17 @@ class ConcurImportDialog(tk.Toplevel):
                 # Concur already holds the receipt image when the export says so; otherwise it's still owed.
                 vals['status']='Receipt received' if r.get('_receipt_in_concur') else 'Awaiting receipt'
                 if r['_extra']: vals['loose_notes']='\n'.join(f'{k}: {v}' for k,v in r['_extra'].items())
+                for f,val in tfill.items(): vals.setdefault(f,val)
                 S.execute('INSERT INTO expenses('+','.join(vals)+') VALUES('+','.join(['?']*len(vals))+')', tuple(vals.values()))
                 new+=1
             if r.get('vendor'): S.upsert_vendor(r['vendor'], q(r.get('expense_type_code')), q(r.get('expense_type_label')))
-        msg=f"Merged {merged}, added {new} new, skipped {skipped}."
-        if rid: msg+=f'\nGrouped under report "{name}".'
+        msg=f"Updated: {merged}\nAdded as new: {new}\nIgnored: {skipped}"
+        if templated: msg+=f"\nFilled in from your saved templates: {templated}"
+        if rid: msg+=f'\n\nReport: "{name}"'
         if renamed: msg+=f'\nRenamed report "{renamed[0]}" to "{renamed[1]}" (Concur\'s name).'
-        if codes: msg+=f"\nLearned {codes} expense type(s) into the glossary."
-        if flags: msg+=('\n\nThese have a receipt staged here that Concur says it does NOT have yet:\n  '
+        if codes: msg+=f"\nAdded {codes} new expense type{'' if codes==1 else 's'} to your Expense Codes list."
+        if flags: msg+=('\n\nYou have a receipt for these in Concur Buddy, but Concur says it does not have one yet. '
+                        'Upload them to Concur:\n  '
                         +'\n  '.join(flags[:12])+('\n  …' if len(flags)>12 else ''))
         messagebox.showinfo('Import complete', msg, parent=self)
         if self.on_done: self.on_done()
@@ -3569,8 +3658,8 @@ class App(tk.Tk):
         if not p: return
         try: ConcurImportDialog(self, p, uid, self.refresh)
         except Exception as e:
-            messagebox.showerror('Import failed', f"Could not read that file:\n{e}\n\nExport the report from Concur "
-                                                  "as Excel (.xlsx) — the entries view, one row per expense.", parent=self)
+            messagebox.showerror('Import failed', f"Concur Buddy couldn't read that file:\n{e}\n\nIn Concur, export the report "
+                                                  "as Excel (.xlsx) from the entries view (one row per expense), then try again.", parent=self)
     def export(self):
         p=filedialog.asksaveasfilename(defaultextension='.csv',filetypes=[('CSV','*.csv')])
         if not p: return

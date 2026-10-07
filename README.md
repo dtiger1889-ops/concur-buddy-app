@@ -10,9 +10,9 @@ Buddy is the quick scratchpad you open *the moment money is spent*: log the expe
 name, drop the receipt file in later, let it remember your codes and attendees, and group everything into reports
 so the eventual Concur filing is just copy-and-paste.
 
-It also works in reverse: **import a report you exported out of Concur** and it reconciles that file against
-what you have staged here — matching on amount, asking you which side wins on anything that disagrees, and never
-touching your attached receipts.
+It also works in reverse: **import a report you exported out of Concur** and it lines that file up against
+what you already have in Concur Buddy. It matches expenses by amount, asks you which copy to keep wherever the
+two disagree, and never touches your attached receipts.
 
 And it keeps you honest about receipts you actually owe: anything at or over your **receipt limit** (default
 $75, adjustable) with nothing attached is flagged **NEEDED** in the list, and one button turns those into a
@@ -170,7 +170,7 @@ or already *Filed*.
    manually with **Copy Concur Summary** / **Copy Attendees**. Then **Mark Filed** to archive it.
    *(Autofill setup: the `autofill_extension/` folder — load it once via Chrome's Load unpacked; see its README.)*
 7. **Filed it in Concur already?** **More ▾ → Import Concur Export (.xlsx)…** pulls the report back in and
-   reconciles it with what you staged, so the two never drift apart.
+   lines it up with what you have in Concur Buddy, so the two never drift apart.
 
 ---
 
@@ -187,8 +187,8 @@ can be filled in later. Useful fields:
   **Amount** using the industry-standard 3% fee, or type your own value.
 - **Expense type code / label** — start typing a number or name and pick from the autocomplete (see
   [Expense codes](#expense-codes)).
-- **Business purpose, business name, city/state/country** — Concur fields, staged here so you don't re-derive
-  them at filing time.
+- **Business purpose, business name, city/state/country** — Concur fields, kept in Concur Buddy so you don't have
+  to work them out again at filing time.
 - **Payment type** — e.g. corporate card vs. personal/reimbursable.
 - Checkboxes: *Is this a vendor invoice?*, *Personal expense / do not reimburse*, *Missing receipt
   acknowledgement attached*.
@@ -284,7 +284,7 @@ typed one). Favorite, annotate, or delete vendors here.
 ### Templates
 A **template** is a named, reusable set of expense fields you apply with one click — handy for expenses you log
 over and over (the same Uber ride, a recurring vendor, a standard meal). The app ships with a starter set of
-**common-vendor templates** — Uber, Amazon, ClickUp, Calendly, Doodle, Staples, catering, florist, and event
+**common-vendor templates** — Uber, Amazon, Amazon Business, ClickUp, Calendly, Doodle, Staples, catering, florist, and event
 entertainment — each pre-filled with that vendor's usual expense code and business purpose. Delete any you don't
 want (they stay gone), or add your own. Every template requires a **vendor**.
 
@@ -384,63 +384,73 @@ On the filter row:
 
 ### Importing a Concur export (reconciling)
 **More ▾ → Import Concur Export (.xlsx)…** goes the *other* way: it reads a report you exported out of Concur
-and reconciles it against what is already staged here. Export the report's entries view from Concur as Excel,
-then point this at the file — no extra software needed, the app reads `.xlsx` on its own.
+and lines it up against what you already have in Concur Buddy. In Concur, export the report's entries view as
+Excel, then point this at the file. No extra software is needed; the app reads `.xlsx` on its own.
 
 **How rows are matched.** The **amount** is the anchor: only expenses matching to the cent are candidates at
 all, which at this volume is nearly unique. The transaction date and how alike the two vendor names look only
 *rank* those candidates — they never invent one. That matters because the card feed's merchant string rarely
 looks like what you typed (`EXAMPLE PARKING 123` vs `Sample Parking`). A same-amount row is only *proposed* as a
-merge when something backs it up — a date within about a month, or names that genuinely resemble each other;
-otherwise it defaults to *Add as new* with the near-miss still listed one click away.
+merge when its date is within about a month; otherwise it defaults to *Add as new* with the near-miss still
+listed one click away. A lookalike name alone is not enough, because a monthly subscription is the same vendor
+at the same amount every month. For the same reason an expense you already marked *Filed* is only proposed on
+the exact same date. Two identical charges in one export each go to their own closest date, whatever order the
+file lists them in.
 
-**Nothing is written until you press Apply.** Every row shows what will happen first — merge into a named staged
-expense, add as new, or skip — and you can change any of them. Double-click a row to pick a different match or
-settle a field.
+**Saved templates fill in the blanks.** When an imported vendor matches one of your saved
+[templates](#templates) (a card name like `CLICKUP` or `AMAZON MKTPL*…` finds the template for that vendor),
+the template fills in any field that would otherwise stay empty, such as the business purpose. It never
+changes a value Concur's file or your own expense already has. A line at the top of the import screen names
+the templates being used, and each row's *Notes* cell says which fields its template fills.
+
+**Nothing is saved until you press Apply.** Every row shows what will happen first (update one of your
+expenses, add a new one, or ignore the row), and you can change any of them. Double-click a row to pick a
+different match or settle a field.
 
 **What each row will do.** Every imported row does exactly one of three things, named the same way on the
-buttons and in the *What will happen* column: **Update** an expense you already have staged here (its receipt,
-notes and status stay yours), **Add** it as a new expense, or **Ignore** it. Rows are colour-coded — amber
-still wants a decision from you, green will update cleanly, blue becomes a new expense, grey is ignored — and
-a ✓ appears once you have been through a row.
+buttons and in the *What will happen* column: **Update** an expense you already have in Concur Buddy (its
+receipt, notes and status stay yours), **Add** it as a new expense, or **Ignore** it. Rows are colour-coded, and
+the legend under the list names each colour: amber *needs a decision*, green *will update*, blue *new expense*,
+grey *ignored*. A ✓ appears once you have reviewed a row.
 
-**Which side wins.** Double-click a row (or **Review…**) to open a comparison table — one line per field, with
-your value, the export's, and which one to use:
+**Which copy wins.** Double-click a row (or press **Review…**) to open a comparison table: one line per field,
+with your value (*In Concur Buddy*), Concur's (*In Concur*), and which one to keep. A tag at the start of each
+line says what kind of field it is:
 
 | Kind of field | What happens | Do you choose? |
 |---|---|---|
-| **Locked** — transaction date, vendor name, amount, payment type, currency | The export wins | No. Concur greys these out because they come from the card feed; neither side can edit them |
-| **Blank here** | The export fills it in | No — there is nothing to lose |
-| **Filled on both sides** and different | You pick | **Yes** — per field, or set all of them at once with *Take the export* / *Keep mine* |
+| **LOCKED** — transaction date, vendor name, amount, payment type, currency | Concur's copy is used | No. Concur greys these out because they come from the card feed (the charge as the card company reported it) |
+| **FILL** — empty in Concur Buddy | Concur's value fills it in | No — there is nothing to lose |
+| **DECIDE** — both copies have a value and they differ | You pick *Mine* or *Concur* | **Yes** — per field, or all at once with *Use Concur's* / *Keep mine* |
 
 Fields you pick default to **keeping your Concur Buddy value**. The expense type's *code and name* count as one
 field, so a merge can never mint a code/name pair that exists in neither system.
 
-**Attachments are never touched.** An export has no files in it, so a merge leaves your staged receipt and
+**Attachments are never touched.** An export has no files in it, so an update leaves your receipt and
 invoice exactly where they are — as does the status. If Concur's own *Receipt* column says it does **not** have
-an image for an expense you have a file for here, that's called out in the summary, so you know what still
-needs uploading.
+an image for an expense you have a file for in Concur Buddy, the summary after Apply lists it, so you know what
+still needs uploading.
 
 **Which report they land in.** The **Report name** box is prefilled from the export — Concur's own name — and
 an import with a name creates that report (or joins one that already has that exact name); leave it blank to
-keep the expenses loose. When you had already staged the trip here under a name of your own, pick that report
-under **Existing report to merge into** and the import joins it instead of creating a second report for the
-same trip. Because Concur's name is the canonical one, that report is **renamed** to the name in the box by
+keep the expenses out of any report. If you had already started the trip as a report in Concur Buddy under a
+name of your own, pick that report under **Or add them to a report you already have** and the import joins it
+instead of creating a second report for the same trip. Because Concur's name is the canonical one, that report is **renamed** to the name in the box by
 default — untick *Rename it to Concur's name* to keep yours. Either way a line under the controls spells out
-exactly what is about to happen ("Joining *your staged name* — and renaming it to *the export's name*")
+exactly what is about to happen ("Joining *the name you gave it* — and renaming it to *the export's name*")
 before you press Apply. Expenses already sitting in some *other* report are never moved.
 
 **The Notes column explains itself.** Each row's *Notes* cell is a short sentence, not shorthand: "3 fields
-taken from Concur's card feed", "2 blanks here will be filled in", "1 field needs your decision", "you have
-the receipt, Concur does not", "nothing staged here has this amount", "2 expenses here have this amount —
-Review to link one".
+taken from Concur's card feed", "2 empty fields will be filled in from Concur", "1 field needs your decision",
+"you have the receipt, Concur does not", "no expense in Concur Buddy has this amount", "2 expenses in Concur
+Buddy have this amount — use Review… to link one".
 
 Also on import: unmatched rows become new expenses (status *Receipt received* if Concur already holds the
 receipt, otherwise *Awaiting receipt*), any expense type the export mentions is learned into your Expense
 Codes glossary, and any column this app has no field for is kept as a note on new expenses rather than
 dropped.
 
-> Because the export's vendor name wins, a merged expense takes on the card's merchant string. Files already
+> Because Concur's vendor name wins, an updated expense takes on the card's merchant string. Files already
 > organized on disk keep the name they were filed under.
 
 ### Attendees (the address book Concur doesn't give you)
@@ -473,7 +483,7 @@ domains and you want one swapped for the other, add rewrites in Settings, one `f
   the template's order — `Attendee Type | Last Name | First Name | Attendee Title | Company` — and the attendee
   **type code** (`SYSEMP`, `BUSGUEST`, `SPOUSE`, `STUDENT`, `PARTNER`) rather than its label. Upload it under
   *Add Attendees → Import Attendees*. Note the template has **no email column** — Concur matches on the names —
-  so email is kept here, not sent there.
+  so email stays in Concur Buddy and is not sent to Concur.
 - **Copy emails** puts the tidied addresses on the clipboard, for finding employees in Concur's own search,
   which is where email actually identifies someone.
 
@@ -585,8 +595,8 @@ Inbox path and Receipt root are stored per-machine; everything else is in the da
 
 ### Import / export (all under More ▾)
 - **Ask for Receipts** — see [Asking someone for receipts](#asking-someone-for-receipts).
-- **Import Concur Export (.xlsx)…** — reads a report exported out of Concur and reconciles it with what is
-  staged here: see [Importing a Concur export](#importing-a-concur-export-reconciling).
+- **Import Concur Export (.xlsx)…** — reads a report exported out of Concur and lines it up with what you
+  have in Concur Buddy: see [Importing a Concur export](#importing-a-concur-export-reconciling).
 - **Export Expenses to CSV…** — dumps all expense rows to a CSV for backup or analysis.
 - **Export for Autofill…** — writes the selected expenses (or, with nothing selected, everything
   *Ready to file*) as `staged_expenses.json` for the **Concur Buddy Autofill** browser extension,
