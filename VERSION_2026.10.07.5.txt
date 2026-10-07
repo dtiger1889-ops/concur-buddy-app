@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.10.07.2
+Concur Buddy — version 2026.10.07.5
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,18 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.10.07.5 — you can now see how many expenses you have selected. The bottom bar reads, for example,
+"34 expenses selected · $6,041.04"; ticking a report counts every expense in it. Each report row's Doc column
+also says how many expenses the report holds.
+
+2026.10.07.4 — click the Amount heading to sort the list by price: highest first, again for lowest first, a
+third time for date order. Reports stay together: each sorts by its total, and its expenses sort inside it.
+
+2026.10.07.3 — the main window now has a colour key in its bottom bar. Amber means an expense still owes a
+receipt. Red means money you paid yourself that you need to claim back soon: it is not filed yet, and it is
+within a week of its 30-day claim deadline or of month-end. Hover a swatch for the exact rule. Right-clicking a
+report (or expenses) now offers Export for autofill…, which exports every expense in that report.
 
 2026.10.07.2 — Concur Buddy can now update itself. Choose More ▾ → Check for Updates…: if a newer version is
 out, you see what's new, and Update and restart downloads it, swaps it in and reopens. Your expenses, receipts

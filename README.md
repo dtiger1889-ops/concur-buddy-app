@@ -140,7 +140,12 @@ every expense at once, and `Space` toggles the row you are on.
 The center is a tree: **expense reports** appear as parent rows with their assigned expenses nested underneath,
 and **loose expenses** (not yet in a report) sit at the top level. The `doc` column shows what's attached — `Receipt`, `Invoice`, `Receipt+Invoice` — or, when nothing is,
 whether one is actually owed: **NEEDED** (and the row turns amber) or *not needed*. A `✓` in the `ready` column means the expense is *Ready to file*
-or already *Filed*.
+or already *Filed*. A colour key sits in the bottom bar: **amber** = owes a receipt; **red** = money you paid
+personally that you need to claim back soon (see [Money you paid yourself](#money-you-paid-yourself-the-30-day-clock)).
+Hover either swatch for the exact rule. Click the **Amount** heading to sort by price (highest first, click again
+for lowest first, a third time for date order): reports sort by their total and keep their expenses inside them,
+sorted too. A report row's Doc column says how many expenses it holds, and the bottom bar counts and totals
+whatever you have selected (a ticked report counts every expense in it).
 
 > The toolbar automatically **wraps** to more lines when the window is narrow, so nothing is ever cut off — resize
 > freely.

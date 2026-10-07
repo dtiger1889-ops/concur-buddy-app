@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.07.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.07.5"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -3330,7 +3330,15 @@ class App(tk.Tk):
         # The right side doubles as a transient status line (e.g. "Copied to clipboard").
         ver=ttk.Frame(self,padding=(6,1)); ver.pack(side='bottom',fill='x')
         ttk.Label(ver,text=f"Concur Buddy  v{APP_VERSION}",foreground='#777').pack(side='left')
+        # Colour key for the list's row backgrounds (same colours as the tag_configure calls below).
+        for text,bg,tip in [('owes a receipt','#fff3cd','No receipt attached yet, and the amount is at or over the receipt limit in Settings.'),
+                            ("claim it soon: you're owed this money",'#fce8e6',
+                             f'You paid personally (Personal / reimbursable), it is not filed yet, and it is within '
+                             f'{REIMBURSE_ALERT_DAYS} days of its {REIMBURSE_DEADLINE_DAYS}-day claim deadline or of month-end.')]:
+            sw=tk.Label(ver,text='   ',background=bg,relief='solid',borderwidth=1,width=3); sw.pack(side='left',padx=(14,0),pady=1)
+            Tooltip(ttk.Label(ver,text=f' {text}',foreground='#555'),tip).widget.pack(side='left'); Tooltip(sw,tip)
         self.status_msg=tk.StringVar(); ttk.Label(ver,textvariable=self.status_msg,foreground='#2a7a2a').pack(side='right')
+        self.sel_info=tk.StringVar(); ttk.Label(ver,textvariable=self.sel_info,font=('Segoe UI',9,'bold')).pack(side='right',padx=(0,16))
         # Taller rows give the report expand/collapse (+/−) control a much bigger hit target.
         ttk.Style().configure('Treeview', rowheight=30)
         # 'id' stays in `columns` (values tuples are positional) but is hidden from view via displaycolumns —
@@ -3361,6 +3369,7 @@ class App(tk.Tk):
         # The 'code' column shows the human-readable expense-type LABEL (not the bare GL number, which is
         # meaningless at a glance) — truncated by width is fine. Right-click-to-change-field is ROADMAP item 15.
         self.tree.heading('code', text='Expense Type')
+        self.amount_sort=None; self.tree.heading('amount', command=self.sort_by_amount)
         self.tree.pack(fill='both',expand=True,padx=4,pady=4); self.tree.bind('<Double-1>',self.on_double)
         # Multi-select (Ctrl/Shift-click) + two ways to file a batch into a report: right-click menu, or drag onto a report row.
         self.menu=tk.Menu(self, tearoff=0)
@@ -3372,6 +3381,8 @@ class App(tk.Tk):
         self.menu.add_command(label='Open file location', command=self.open_doc_location)
         self.menu.add_command(label='Open report folder…', command=self.report_folder_action)
         self.menu.add_command(label='Copy Concur summary', command=self.copy_summary)
+        # On a report row this exports every expense inside it (export_autofill fans a report out to its expenses).
+        self.menu.add_command(label='Export for autofill…', command=self.export_autofill)
         self.menu.add_command(label='Ask for these receipts…', command=self.request_receipts)
         self.menu.add_separator()
         self.menu.add_command(label='Move to user…', command=self.switch_user)
@@ -3463,13 +3474,28 @@ class App(tk.Tk):
         for r in S.rows('SELECT * FROM reports WHERE user_id=? ORDER BY created_at DESC',(uid,)) if uid else []:
             # A Filed report disappears from the default view (with its filed expenses) just like a filed expense does.
             if not self.show_filed.get() and st!='Filed' and r['status']=='Filed': continue
-            total=S.scalar('SELECT COALESCE(SUM(amount),0) FROM expenses WHERE report_id=?',(r['id'],)); parent=self.tree.insert('', 'end', iid=f"R{r['id']}", text='[Report] '+r['name'], image=self.chk_img[False], values=(r['id'],r['report_date'] or '', '', f"{total:.2f}", r['status'], 'Report', '', r['travel_purpose'] or '', ''), open=(f"R{r['id']}" in open_ids))
+            n,total=S.row('SELECT COUNT(*), COALESCE(SUM(amount),0) FROM expenses WHERE report_id=?',(r['id'],)); parent=self.tree.insert('', 'end', iid=f"R{r['id']}", text='[Report] '+r['name'], image=self.chk_img[False], values=(r['id'],r['report_date'] or '', '', f"{total:.2f}", r['status'], f"{n} expense{'' if n==1 else 's'}", '', r['travel_purpose'] or '', ''), open=(f"R{r['id']}" in open_ids))
             self._chk_state[parent]=False
             for e in S.rows('SELECT * FROM expenses WHERE report_id=? ORDER BY transaction_date DESC',(r['id'],)):
                 if self.match(e,term,st): self.insert_exp(parent,e)
         for e in S.rows('SELECT * FROM expenses WHERE user_id=? AND report_id IS NULL ORDER BY transaction_date DESC, id DESC',(uid,)) if uid else []:
             if self.match(e,term,st): self.insert_exp('',e)
-        self._sync_checks(); self.refresh_counter()
+        self._apply_amount_sort(); self._sync_checks(); self.refresh_counter()
+    def sort_by_amount(self):
+        """Amount heading click: highest first → lowest first → back to date order."""
+        self.amount_sort={None:'desc','desc':'asc','asc':None}[self.amount_sort]
+        self.tree.heading('amount', text={'desc':'Amount ▼','asc':'Amount ▲',None:'Amount'}[self.amount_sort])
+        self.refresh()
+    def _apply_amount_sort(self):
+        """Reorder by amount without breaking reports apart: reports (by their total) and loose expenses sort
+        together at the top level, and each report's expenses sort inside it. Ties keep the date order."""
+        if not self.amount_sort: return
+        def amt(iid):
+            try: return float(self.tree.set(iid,'amount') or 0)
+            except ValueError: return 0.0
+        for parent in ['']+list(self.tree.get_children('')):
+            for i,iid in enumerate(sorted(self.tree.get_children(parent), key=amt, reverse=self.amount_sort=='desc')):
+                self.tree.move(iid,parent,i)
     def visible_expense_ids(self):
         """Every expense id the tree is currently showing, in display order — report children included,
         in the position they appear. This is what the expense dialog's prev/next walks, so the arrows
@@ -3571,6 +3597,10 @@ class App(tk.Tk):
             if now!=was: self.tree.item(iid,image=self.chk_img[now]); self._chk_state[iid]=now
         exp=[iid for iid in self._chk_state if iid.startswith('E')]
         self.tree.heading('#0',image=self.chk_img[bool(exp) and all(i in sel for i in exp)])
+        # Selection readout: a ticked report counts every expense it is showing, each expense counted once.
+        ids={i for i in sel if i.startswith('E')}|{c for i in sel if i.startswith('R') for c in self.tree.get_children(i)}
+        total=sum(float(self.tree.set(i,'amount') or 0) for i in ids if self.tree.exists(i))
+        self.sel_info.set(f"{len(ids)} expense{'' if len(ids)==1 else 's'} selected · ${total:,.2f}" if ids else '')
     def selected(self):
         iid=self.tree.focus(); return (iid[0], int(iid[1:])) if iid else (None,None)
     def quick_add(self): ExpenseDialog(self, default_user_id=self.current_user_id())
