@@ -1,5 +1,6 @@
 
 import os, re, csv, json, sqlite3, shutil, subprocess, webbrowser, sys, calendar, base64, zipfile, difflib
+import io, threading, urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -7,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.07.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.07.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -18,6 +19,9 @@ STATUSES = ["Draft", "Awaiting invoice", "Awaiting receipt", "Receipt received",
 # Old status spellings -> new (applied as a one-time data migration on existing DBs).
 STATUS_MIGRATE = {"Expected": "Awaiting receipt", "Receipt Received": "Receipt received", "Ready": "Ready to file"}
 PAYMENT_TYPES = ["Corporate Card", "Personal / reimbursable", "Other"]
+DEFAULT_CARD_LABEL = PAYMENT_TYPES[0]  # fallback only; the live label is the database's 'corporate_card_label' setting
+# Org wording kept in the DB settings table: (setting key, table, column whose schema DEFAULT seeds it on first run).
+ORG_SETTING_COLUMNS = [('corporate_card_label', 'expenses', 'payment_type'), ('expense_group_id', 'reports', 'expense_group_id')]
 CURRENCIES = ["USD"]
 TRAVEL_TYPES = ["No Travel", "Domestic Travel", "International Travel"]
 GRANT_TYPES = ["(GL) Non-Grant", "Grant"]
@@ -485,6 +489,15 @@ def ensure_local_paths():
     if changed: write_local_settings(d)
 
 def q(s): return '' if s is None else str(s)
+def sql_literal_text(v):
+    """A column default as PRAGMA table_info reports it ("'It''s'") -> plain text ("It's"); None -> ''."""
+    v = q(v).strip()
+    if len(v) >= 2 and v[0] == v[-1] == "'": v = v[1:-1].replace("''", "'")
+    return v
+def apply_org_settings(store):
+    """Point the payment-type list at this database's corporate-card label. Index 0 means 'the corporate card'
+    everywhere (new expenses, templates, card rules), so updating it in place reaches every user of the list."""
+    PAYMENT_TYPES[0] = q(store.get_setting('corporate_card_label')).strip() or DEFAULT_CARD_LABEL
 def today(): return date.today().isoformat()
 def safe_filename(s):
     s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', q(s)).strip()
@@ -943,6 +956,17 @@ class Store:
         for code,name,notes in ORACLE_SEED:
             self.execute('INSERT OR IGNORE INTO oracle_codes(code,name,notes) VALUES(?,?,?)', (code,name,notes))
         pass  # legacy private-build data migrations removed in the public build
+        self.seed_org_settings()
+    def seed_org_settings(self):
+        """The organisation's corporate-card label and default Expense Group ID live in the settings table (Settings
+        window), so they ride with the database instead of the build. Seeded once from this DB's OWN column
+        defaults: a database created by a build that spelled them out keeps its wording after an update to a build
+        with generic defaults, and a brand-new database gets this build's defaults."""
+        for key, table, col in ORG_SETTING_COLUMNS:
+            if self.get_setting(key) is None:
+                dflt = next((r['dflt_value'] for r in self.rows(f'PRAGMA table_info({table})') if r['name'] == col), None)
+                self.set_setting(key, sql_literal_text(dflt))
+        apply_org_settings(self)
     def apply_favorite_bookmarks(self):
         """Flag the report-derived favorite codes. Run AFTER the CSV import so names come from the master list.
         A code with multiple official names gets ALL its rows starred (they share the GL code the reports used)."""
@@ -2150,7 +2174,7 @@ class ReportDialog(tk.Toplevel):
         def add(label, var, values=None):
             nonlocal row; ttk.Label(frm,text=label).grid(row=row,column=0,sticky='w',pady=4); w=ttk.Combobox(frm,textvariable=var,values=values) if values else ttk.Entry(frm,textvariable=var); w.grid(row=row,column=1,sticky='ew',pady=4); row+=1
         add('User', self.user_var, list(self.user_map))
-        fields=[('name','Report Name *',''),('report_date','Report Date',today()),('start_date','Start Date',''),('end_date','End Date',''),('travel_purpose','Travel Destination/Business Purpose',''),('travel_type','Travel type',TRAVEL_TYPES),('expense_group_id','Expense Group ID',''),('report_id','Report Id',''),('currency','Report Currency','US, Dollar'),('approval_status','Approval Status','Not Submitted'),('payment_status','Payment Status','Not Paid'),('grant_type','Grant/Non Grant',GRANT_TYPES),('expense_report_for','Expense Report For',''),('business_unit','Business Unit',''),('comment','Comment','')]
+        fields=[('name','Report Name *',''),('report_date','Report Date',today()),('start_date','Start Date',''),('end_date','End Date',''),('travel_purpose','Travel Destination/Business Purpose',''),('travel_type','Travel type',TRAVEL_TYPES),('expense_group_id','Expense Group ID',q(S.get_setting('expense_group_id'))),('report_id','Report Id',''),('currency','Report Currency','US, Dollar'),('approval_status','Approval Status','Not Submitted'),('payment_status','Payment Status','Not Paid'),('grant_type','Grant/Non Grant',GRANT_TYPES),('expense_report_for','Expense Report For',''),('business_unit','Business Unit',''),('comment','Comment','')]
         for f,label,default in fields:
             self.vars[f]=tk.StringVar(value=q(data.get(f, default if isinstance(default,str) else ''))); add(label,self.vars[f], default if isinstance(default,list) else None)
         # Oracle alias gets an autocomplete picker; new reports default to "Unknown"; new entries grow the list on save.
@@ -3075,6 +3099,162 @@ class ConcurImportDialog(tk.Toplevel):
         if self.on_done: self.on_done()
         self.destroy()
 
+# --- In-app updater (More ▾ → Check for updates). Pulls the published build; specs/in-app-updater.md. ---
+UPDATE_REPO = 'dtiger1889-ops/concur-buddy-app'
+UPDATE_PAGE = f'https://github.com/{UPDATE_REPO}'
+UPDATE_LISTING = f'https://api.github.com/repos/{UPDATE_REPO}/contents/'
+UPDATE_RAW = f'https://raw.githubusercontent.com/{UPDATE_REPO}/main/'
+UPDATE_ZIP = f'https://codeload.github.com/{UPDATE_REPO}/zip/refs/heads/main'
+APP_CODE_DIR = Path(__file__).resolve().parent
+UPDATE_BACKUPS = APP_DIR / 'app_backups'
+# Repo plumbing that isn't part of the app: dotfiles, the VERSION_ marker, the README screenshots.
+UPDATE_SKIP = re.compile(r'(^|/)\.|^VERSION_|^screenshots/')
+
+def version_key(v):
+    """'2026.10.07.1' -> (2026, 10, 7, 1); a same-day '.N' release sorts after the plain date."""
+    return tuple(int(p) for p in re.findall(r'\d+', q(v)))
+
+def http_get(url, timeout=30):
+    req = urllib.request.Request(url, headers={'User-Agent': f'ConcurBuddy/{APP_VERSION}'})
+    with urllib.request.urlopen(req, timeout=timeout) as r: return r.read()
+
+def latest_release(fetch=http_get):
+    """(version, release-notes text) of the newest published build. The version comes from the repo-root
+    VERSION_<version>.txt marker, which every release renames, so one small listing call answers it."""
+    listing = json.loads(fetch(UPDATE_LISTING))
+    found = [m.group(1) for e in listing if isinstance(e, dict)
+             for m in [re.fullmatch(r'VERSION_(\d[\d.]*)\.txt', q(e.get('name')))] if m]
+    if not found: raise ValueError('the download page has no version marker')
+    v = max(found, key=version_key)
+    return v, fetch(UPDATE_RAW + f'VERSION_{v}.txt').decode('utf-8', 'replace')
+
+def notes_since(notes, current):
+    """The release-note entries newer than `current`. Each entry starts at a line beginning 'YYYY.MM.DD[.N] — '."""
+    out, keep = [], False
+    for line in q(notes).splitlines():
+        m = re.match(r'(\d{4}\.\d{2}\.\d{2}(?:\.\d+)?) [—-] ', line)
+        if m: keep = version_key(m.group(1)) > version_key(current)
+        if keep: out.append(line)
+    return '\n'.join(out).strip()
+
+def install_update(zip_bytes, expected_version, app_dir=None, backup_root=None):
+    """Swap this folder's code for the release in zip_bytes; return the backup folder.
+
+    Fails closed: nothing is written unless the download carries concur_buddy.py, that file's APP_VERSION is the
+    version that was offered, and it compiles. Every file about to be overwritten is copied to the backup first,
+    and a failure part-way through puts those copies back. Files the release doesn't carry (the database lives
+    elsewhere; a local code list, notes) are left alone."""
+    app_dir = Path(app_dir or APP_CODE_DIR); backup_root = Path(backup_root or UPDATE_BACKUPS)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        names = [n for n in z.namelist() if not n.endswith('/')]
+        top = {n.split('/', 1)[0] for n in names}
+        prefix = (top.pop() + '/') if len(top) == 1 and all('/' in n for n in names) else ''
+        files = {}
+        for n in names:
+            rel = n[len(prefix):]
+            if rel.startswith('/') or '..' in rel.split('/') or ':' in rel: raise ValueError(f'unsafe path in the download: {rel}')
+            if not rel or UPDATE_SKIP.search(rel): continue
+            files[rel] = z.read(n)
+    code = files.get('concur_buddy.py')
+    if code is None: raise ValueError('the download has no concur_buddy.py')
+    m = re.search(rb'^APP_VERSION = "([^"]+)"', code, re.M)
+    got = m.group(1).decode() if m else '?'
+    if got != expected_version: raise ValueError(f'the download is version {got}, not the {expected_version} that was offered')
+    compile(code, 'concur_buddy.py', 'exec')  # a truncated or garbled file raises here, before anything is touched
+    backup = backup_root / APP_VERSION
+    if backup.exists(): backup = backup_root / f"{APP_VERSION} {datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    changed = [rel for rel, data in files.items() if not ((app_dir / rel).is_file() and (app_dir / rel).read_bytes() == data)]
+    for rel in changed:
+        if (app_dir / rel).is_file():
+            (backup / rel).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(app_dir / rel, backup / rel)
+    written = []
+    try:
+        for rel in changed:
+            dst = app_dir / rel; dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(dst.name + '.cb_new')
+            try: tmp.write_bytes(files[rel]); os.replace(tmp, dst)
+            except Exception: tmp.unlink(missing_ok=True); raise
+            written.append(rel)
+    except Exception:
+        for rel in written:
+            if (backup / rel).is_file(): shutil.copy2(backup / rel, app_dir / rel)
+            else: (app_dir / rel).unlink(missing_ok=True)
+        raise
+    return backup
+
+def restart_app():
+    """Start the freshly installed copy the way this one was started. From run_concur_buddy.bat the batch file
+    relaunches in its own console window; the old console closes because the app exits cleanly."""
+    exe = Path(sys.executable); bat = APP_CODE_DIR / 'run_concur_buddy.bat'
+    new_console = getattr(subprocess, 'CREATE_NEW_CONSOLE', 0)
+    if exe.name.lower() == 'pythonw.exe': subprocess.Popen([str(exe), str(APP_CODE_DIR / 'concur_buddy.py')], cwd=str(APP_CODE_DIR))
+    elif bat.exists() and os.name == 'nt': subprocess.Popen(['cmd', '/c', str(bat)], cwd=str(APP_CODE_DIR), creationflags=new_console)
+    else: subprocess.Popen([str(exe), str(APP_CODE_DIR / 'concur_buddy.py')], cwd=str(APP_CODE_DIR), creationflags=new_console)
+
+class UpdateDialog(tk.Toplevel):
+    """More ▾ → Check for updates: compare with the published build, show what's new, install on one click.
+    Network calls run on a worker thread so the window never freezes; `release` skips the check (layout tests)."""
+    def __init__(self, master, release=None, fetch=http_get):
+        super().__init__(master); self.title('Check for updates'); self.transient(master); self.fetch = fetch
+        self.msg = ttk.Label(self, padding=(10, 10, 10, 4), wraplength=520, justify='left'); self.msg.pack(anchor='w', fill='x')
+        self.bar = FlowBar(self, padding=8); self.bar.pack(side='bottom', fill='x')
+        self.body = ttk.Frame(self, padding=(10, 0)); self.body.pack(fill='both', expand=True)
+        self.bind('<Escape>', lambda e: self.destroy())
+        fit_to_screen(self, min_w=560, min_h=360)
+        if release: self.offer(*release)
+        else:
+            self.msg.config(text='Checking for a newer version…'); self._buttons(('Close', self.destroy))
+            self._run(lambda: latest_release(self.fetch), self._checked)
+    def _run(self, work, done):
+        """Run work() off the UI thread, then hand done() its result (or the exception) back on the UI thread."""
+        box = {}
+        def worker():
+            try: box['ok'] = work()
+            except Exception as e: box['err'] = e
+        t = threading.Thread(target=worker, daemon=True); t.start()
+        def poll():
+            if not self.winfo_exists(): return
+            if t.is_alive(): self.after(150, poll); return
+            done(box.get('ok'), box.get('err'))
+        self.after(150, poll)
+    def _buttons(self, *spec):
+        for w in list(self.bar.items): w.destroy()
+        self.bar.items.clear()
+        for text, cmd in spec: self.bar.button(text, cmd)
+        self.bar._reflow()
+    def _checked(self, result, err):
+        if err: return self.failed(f"Concur Buddy couldn't reach the download page ({err}).", changed=False)
+        v, notes = result
+        if version_key(v) <= version_key(APP_VERSION):
+            self.msg.config(text=f'You have the newest version (v{APP_VERSION}).'); self._buttons(('Close', self.destroy)); return
+        self.offer(v, notes)
+    def offer(self, v, notes):
+        self.version = v
+        self.msg.config(text=f'Version {v} is ready to install. You have v{APP_VERSION}.')
+        for w in self.body.winfo_children(): w.destroy()
+        ttk.Label(self.body, text="What's new:").pack(anchor='w')
+        txt = tk.Text(self.body, height=10, width=64, wrap='word'); txt.pack(fill='both', expand=True, pady=4)
+        txt.insert('1.0', notes_since(notes, APP_VERSION) or 'No notes were written for this version.'); txt.config(state='disabled')
+        ttk.Label(self.body, wraplength=520, justify='left', foreground='#555',
+                  text='Your expenses, receipts and settings stay exactly as they are. The current version is kept '
+                       f'as a backup in {UPDATE_BACKUPS}. Concur Buddy closes and reopens to finish.').pack(anchor='w')
+        self._buttons(('Update and restart', self.install), ('Not now', self.destroy))
+    def install(self):
+        self.msg.config(text=f'Downloading version {self.version}…'); self._buttons()
+        self._run(lambda: install_update(self.fetch(UPDATE_ZIP), self.version), self._installed)
+    def _installed(self, backup, err):
+        if err: return self.failed(f"The update didn't install ({err}).", changed=False)
+        self.msg.config(text=f'Version {self.version} is installed. Reopening Concur Buddy…'); self.update()
+        try: restart_app()
+        except Exception as e:
+            messagebox.showinfo('Update installed', f'Version {self.version} is installed. Close Concur Buddy and open it '
+                                f'again to start using it.\n\n(It could not reopen itself: {e})', parent=self); return
+        self.master.destroy()
+    def failed(self, text, changed):
+        self.msg.config(text=text + ('' if changed else ' Nothing was changed.') +
+                        ' You can download the newest version in your browser instead.')
+        self._buttons(('Open download page', lambda: webbrowser.open(UPDATE_PAGE)), ('Close', self.destroy))
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -3246,6 +3426,7 @@ class App(tk.Tk):
         m.add_separator()
         m.add_command(label='Refresh', command=self.refresh, accelerator='F5')
         m.add_command(label='Settings…', command=self.settings)
+        m.add_command(label='Check for Updates…', command=lambda:UpdateDialog(self))
         m.add_command(label='About Concur Buddy', command=self.about)
         return m
     def _bind_accelerators(self):
@@ -3619,11 +3800,17 @@ class App(tk.Tk):
         ttk.Label(frm,text='Receipt needed at or above').grid(row=2,column=0,sticky='w')
         ttk.Entry(frm,textvariable=lim,width=12,validate='key',validatecommand=(self.register(_num_validate),'%P')).grid(row=2,column=1,sticky='w')
         ttk.Label(frm,text='$  — below this, the list shows "not needed" and stops nagging').grid(row=2,column=2,sticky='w')
+        # Your organisation's wording, exactly as Concur shows it. Text, not paths -> DB settings, synced like the data.
+        org={}
+        for i,(k,label,hint) in enumerate([('corporate_card_label','Corporate card name','as Concur lists it under Payment Type'),
+                                            ('expense_group_id','Expense Group ID','filled in on new reports')], start=3):
+            org[k]=tk.StringVar(value=q(S.get_setting(k))); ttk.Label(frm,text=label).grid(row=i,column=0,sticky='w')
+            ttk.Entry(frm,textvariable=org[k]).grid(row=i,column=1,sticky='ew'); ttk.Label(frm,text=hint,foreground='#555').grid(row=i,column=2,sticky='w')
         # --- Database location (move to a Drive-synced folder, or point at an existing DB on another device) ---
-        ttk.Separator(frm,orient='horizontal').grid(row=3,column=0,columnspan=3,sticky='ew',pady=8)
-        ttk.Label(frm,text='Database').grid(row=4,column=0,sticky='w')
-        db_var=tk.StringVar(value=str(S.path)); ttk.Entry(frm,textvariable=db_var,state='readonly').grid(row=4,column=1,sticky='ew')
-        dbbar=FlowBar(frm,padding=(0,2)); dbbar.grid(row=5,column=0,columnspan=3,sticky='ew')
+        ttk.Separator(frm,orient='horizontal').grid(row=5,column=0,columnspan=3,sticky='ew',pady=8)
+        ttk.Label(frm,text='Database').grid(row=6,column=0,sticky='w')
+        db_var=tk.StringVar(value=str(S.path)); ttk.Entry(frm,textvariable=db_var,state='readonly').grid(row=6,column=1,sticky='ew')
+        dbbar=FlowBar(frm,padding=(0,2)); dbbar.grid(row=7,column=0,columnspan=3,sticky='ew')
         def move_db():
             d=filedialog.askdirectory(title='Move the database to which folder? (you can create a new folder)', parent=win)
             if not d: return
@@ -3644,11 +3831,14 @@ class App(tk.Tk):
         def save():
             for k,v in vars.items(): set_local_setting(k, v.get())  # inbox_path/receipt_root are per-machine local
             for k,v in vars_db.items(): S.set_setting(k, clean_number(v.get()))  # policy numbers ride with the DB
+            for k,v in org.items(): S.set_setting(k, v.get().strip())
+            apply_org_settings(S)
             receipt_limit(reload=True); self.refresh()  # repaint the list against the new limit straight away
             win.destroy()
-        actbar=FlowBar(frm,padding=(0,8)); actbar.grid(row=6,column=0,columnspan=3,sticky='ew')
+        actbar=FlowBar(frm,padding=(0,8)); actbar.grid(row=8,column=0,columnspan=3,sticky='ew')
         actbar.button('Add User', self.add_user); actbar.button('Save', save)
         fit_to_screen(win, min_w=620, min_h=300)
+        return win
     def import_concur_export(self):
         """More ▾ → Import Concur Export: reconcile a report exported out of Concur with what's staged here."""
         uid=self.current_user_id()

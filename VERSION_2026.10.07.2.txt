@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.10.07.1
+Concur Buddy — version 2026.10.07.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -8,7 +8,15 @@ title bar and bottom-left footer). In the public release, the file is at the rep
 
 Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the same
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
-to the new VERSION_<version>.txt name in the same commit.
+to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
+Updates shows every entry newer than the version the person is running.
+
+2026.10.07.2 — Concur Buddy can now update itself. Choose More ▾ → Check for Updates…: if a newer version is
+out, you see what's new, and Update and restart downloads it, swaps it in and reopens. Your expenses, receipts
+and settings are never touched, and the version you had is kept as a backup. Nothing is replaced unless the
+whole download arrives and checks out; with no internet, the window offers the download page instead. Settings
+also gains two fields, Corporate card name and Expense Group ID, so your organisation's exact wording lives in
+your database. An existing database keeps the wording it already had.
 
 2026.09.23.3 — card recognition works out far more receipts. Many receipts print only "MASTERCARD" and a
 row of x's, with no last four, so no card could be matched. In My Cards you can now leave the last four BLANK

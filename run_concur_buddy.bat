@@ -1,3 +1,3 @@
 @echo off
 python "%~dp0concur_buddy.py"
-pause
+if errorlevel 1 pause

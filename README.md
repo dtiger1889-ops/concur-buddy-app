@@ -575,6 +575,9 @@ Set your **Inbox path** and **Receipt root** (with **Browse** buttons) and **Add
 
 - **Receipt needed at or above** — the amount that decides whether the list nags you for a receipt. Default
   **$75**; it lives in the database, so it follows you across machines.
+- **Corporate card name** — your corporate card exactly as Concur lists it under Payment Type. New expenses and
+  card rules use it. Lives in the database.
+- **Expense Group ID** — what new reports fill in for Expense Group ID. Lives in the database.
 - **My cards…** — the cards you pay with, so OCR can tell whose money it was. See
   [Knowing which card paid](#knowing-which-card-paid).
 - **Email rewrites** — optional `from=to` domain swaps for pasted attendee addresses. Empty by default.
@@ -630,9 +633,14 @@ Organized receipt files live under your chosen **Receipt root** (default `Docume
 
 ## Updating
 
-Download the latest copy of this folder and replace your old one. Because your database and receipts live
-elsewhere (above), updating is safe — the new version upgrades your database in place automatically. Optionally
-back up `%APPDATA%\ConcurBuddy\concur_buddy.sqlite3` first.
+Choose **More ▾ → Check for Updates…**. If a newer version is out, Concur Buddy shows what's new; click
+**Update and restart** and it downloads the new version, swaps it in and reopens. Your database and receipts live
+elsewhere (above), so they are never touched, and the new version upgrades your database in place automatically.
+The version you had is kept in `%APPDATA%\ConcurBuddy\app_backups\<version>\`; to go back, copy those files into
+this folder.
+
+Nothing is replaced unless the whole download arrives and checks out. If the app can't reach the internet, the
+same window offers **Open download page**: download the ZIP there and replace this folder with its contents.
 
 ---
 
