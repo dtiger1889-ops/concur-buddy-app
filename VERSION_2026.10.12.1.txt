@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.10.07.5
+Concur Buddy — version 2026.10.12.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,11 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.10.12.1 — every column heading now sorts the list, not just Amount. Click once to sort, again to reverse,
+a third time to go back to date order. Dates sort as dates, amounts as numbers, and Status follows its order
+from Draft to Filed; blank cells always go last. Clicking the words "Report / Expense" now sorts by name
+instead of selecting everything; the little box beside them still selects every expense.
 
 2026.10.07.5 — you can now see how many expenses you have selected. The bottom bar reads, for example,
 "34 expenses selected · $6,041.04"; ticking a report counts every expense in it. Each report row's Doc column

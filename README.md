@@ -106,7 +106,7 @@ exists by default as an example; rename or replace it with your own.
 │ 5 open receipts · 2 need a receipt · 1 ready to file                      │  ← counter (click it to tick
 │                                                                          │     everything that owes one)
 ├──────────────────────────────────────────────────────────────────────────┤
-│ [ ] Report / Expense   date  vendor  amount  status  doc  code  …         │  ← heading box = select all
+│ [ ] Report / Expense   date  vendor  amount  status  doc  code  …         │  ← box = select all; headings sort
 │ [ ] ▸ [Report] Q2 Travel                                                  │  ← reports group their expenses
 │      [x] [Expense] Marriott    …                                          │  ← ticked = selected
 │ [ ] [Expense] Starbucks     …                                             │  ← loose (unassigned) expenses
@@ -142,9 +142,10 @@ and **loose expenses** (not yet in a report) sit at the top level. The `doc` col
 whether one is actually owed: **NEEDED** (and the row turns amber) or *not needed*. A `✓` in the `ready` column means the expense is *Ready to file*
 or already *Filed*. A colour key sits in the bottom bar: **amber** = owes a receipt; **red** = money you paid
 personally that you need to claim back soon (see [Money you paid yourself](#money-you-paid-yourself-the-30-day-clock)).
-Hover either swatch for the exact rule. Click the **Amount** heading to sort by price (highest first, click again
-for lowest first, a third time for date order): reports sort by their total and keep their expenses inside them,
-sorted too. A report row's Doc column says how many expenses it holds, and the bottom bar counts and totals
+Hover either swatch for the exact rule. Click any column heading to sort by it: a second click reverses the
+order and a third goes back to date order. Amount and Date start biggest/newest first, words start A to Z, and
+Status follows its Draft → Filed order; clicking the words **Report / Expense** sorts by name (its box still
+selects everything). Reports keep their expenses inside them, sorted too, and blank cells always go last. A report row's Doc column says how many expenses it holds, and the bottom bar counts and totals
 whatever you have selected (a ticked report counts every expense in it).
 
 > The toolbar automatically **wraps** to more lines when the window is narrow, so nothing is ever cut off — resize

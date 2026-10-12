@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.07.5"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.12.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -3364,12 +3364,16 @@ class App(tk.Tk):
             stl.layout('Checkbox.Treeview.Heading', image_left(stl.layout('Treeview.Heading')))
             self.tree.configure(style='Checkbox.Treeview')
         except Exception: pass
-        self.tree.heading('#0',text='Report / Expense',image=self.chk_img[False],anchor='w',command=self.toggle_select_all)
+        # Every heading sorts. On the first heading only its check box selects all; its words sort by name
+        # (2026-10-12) — _heading_press records where the click landed so the command can tell which.
+        self.tree.heading('#0',text='Report / Expense',image=self.chk_img[False],anchor='w',command=self._name_heading_click)
         for c,w in [('id',55),('date',95),('vendor',190),('amount',85),('status',120),('doc',92),('code',170),('purpose',210),('ready',60)]: self.tree.heading(c,text=c.title()); self.tree.column(c,width=w)
         # The 'code' column shows the human-readable expense-type LABEL (not the bare GL number, which is
         # meaningless at a glance) — truncated by width is fine. Right-click-to-change-field is ROADMAP item 15.
         self.tree.heading('code', text='Expense Type')
-        self.amount_sort=None; self.tree.heading('amount', command=self.sort_by_amount)
+        self.sort_titles={'#0':'Report / Expense', **{c:self.tree.heading(c,'text') for c in self.tree['displaycolumns']}}
+        self.sort_col=None; self.sort_dir=None; self._head_press=None
+        for c in self.tree['displaycolumns']: self.tree.heading(c, command=lambda c=c: self.sort_by(c))
         self.tree.pack(fill='both',expand=True,padx=4,pady=4); self.tree.bind('<Double-1>',self.on_double)
         # Multi-select (Ctrl/Shift-click) + two ways to file a batch into a report: right-click menu, or drag onto a report row.
         self.menu=tk.Menu(self, tearoff=0)
@@ -3395,6 +3399,7 @@ class App(tk.Tk):
         self._drag_ids=[]; self._drag_from=None; self._dragging=False; self._press_xy=(0,0); self._drop_row=None; self._ghost=None
         # NB: the check-box handler must be bound BEFORE the drag handler — it returns 'break' on a box
         # click, which stops the rest of the chain (including tk's own click-collapses-the-selection).
+        self.tree.bind('<ButtonPress-1>', self._heading_press, add='+')
         self.tree.bind('<ButtonPress-1>', self._check_click, add='+')
         self.tree.bind('<<TreeviewSelect>>', self._sync_checks, add='+')
         self.tree.bind('<space>', self._space_toggle)
@@ -3480,21 +3485,63 @@ class App(tk.Tk):
                 if self.match(e,term,st): self.insert_exp(parent,e)
         for e in S.rows('SELECT * FROM expenses WHERE user_id=? AND report_id IS NULL ORDER BY transaction_date DESC, id DESC',(uid,)) if uid else []:
             if self.match(e,term,st): self.insert_exp('',e)
-        self._apply_amount_sort(); self._sync_checks(); self.refresh_counter()
-    def sort_by_amount(self):
-        """Amount heading click: highest first → lowest first → back to date order."""
-        self.amount_sort={None:'desc','desc':'asc','asc':None}[self.amount_sort]
-        self.tree.heading('amount', text={'desc':'Amount ▼','asc':'Amount ▲',None:'Amount'}[self.amount_sort])
+        self._apply_sort(); self._sync_checks(); self.refresh_counter()
+    # First click on a heading sorts the way you'd most often want it (biggest/newest first for numbers and
+    # dates, A→Z for words, lifecycle order for Status); the second reverses it; the third goes back to date order.
+    SORT_FIRST_DESC=('amount','date')
+    def sort_by(self, col):
+        first='desc' if col in self.SORT_FIRST_DESC else 'asc'
+        if col!=self.sort_col: self.sort_col,self.sort_dir=col,first
+        elif self.sort_dir==first: self.sort_dir={'asc':'desc','desc':'asc'}[first]
+        else: self.sort_col=self.sort_dir=None
+        for c,t in self.sort_titles.items():
+            arrow=(' ▼' if self.sort_dir=='desc' else ' ▲') if c==self.sort_col else ''
+            self.tree.heading(c, text=t+arrow)
         self.refresh()
-    def _apply_amount_sort(self):
-        """Reorder by amount without breaking reports apart: reports (by their total) and loose expenses sort
-        together at the top level, and each report's expenses sort inside it. Ties keep the date order."""
-        if not self.amount_sort: return
-        def amt(iid):
-            try: return float(self.tree.set(iid,'amount') or 0)
-            except ValueError: return 0.0
+    def _heading_press(self, e):
+        """Remember where a heading was pressed: tk calls a heading's command on release with no event."""
+        if self.tree.identify_region(e.x, e.y)=='heading': self._head_press=(e.x, e.y)
+    def _name_heading_click(self):
+        """'Report / Expense' heading: its check box selects every expense; anywhere else on it sorts by name."""
+        hit=self._head_press; self._head_press=None
+        if hit and self._hits_heading_box(*hit): self.toggle_select_all()
+        else: self.sort_by('#0')
+    def _hits_heading_box(self, x, y):
+        el=str(self.tree.identify_element(x, y) or '')
+        if 'image' in el: return True
+        if 'text' in el: return False
+        return self.tree.identify_column(x)=='#0' and x <= CHECKBOX_PX+10  # theme with unnamed elements: the box is leftmost
+    def _sort_key(self, col):
+        """(blank?, value) for one row of a column — dates as dates, money as numbers, Status in lifecycle order."""
+        def key(iid):
+            raw=self.tree.item(iid,'text').split('] ',1)[-1] if col=='#0' else self.tree.set(iid,col)
+            raw=(raw or '').strip()
+            if not raw: return None
+            if col=='amount':
+                try: return float(raw.replace(',','').replace('$',''))
+                except ValueError: return None
+            if col=='date':
+                for fmt in ('%Y-%m-%d','%m/%d/%Y','%m/%d/%y'):
+                    try: return datetime.strptime(raw[:10], fmt).date()
+                    except ValueError: pass
+                return None
+            if col=='status': return (STATUSES.index(raw) if raw in STATUSES else len(STATUSES), raw.lower())
+            if col=='doc':  # a report's "3 expenses" sorts by its count; an expense's words sort as words
+                m=re.match(r'(\d+) expense', raw)
+                if m: return (1, int(m.group(1)), '')
+                return (0, 0, raw.lower())
+            return raw.lower()
+        return key
+    def _apply_sort(self):
+        """Reorder by the chosen heading without breaking reports apart: reports and loose expenses sort
+        together at the top level, and each report's expenses sort inside it. Blank cells always go last,
+        and ties keep the date order."""
+        if not self.sort_col: return
+        key=self._sort_key(self.sort_col)
         for parent in ['']+list(self.tree.get_children('')):
-            for i,iid in enumerate(sorted(self.tree.get_children(parent), key=amt, reverse=self.amount_sort=='desc')):
+            kids=[(iid,key(iid)) for iid in self.tree.get_children(parent)]
+            full=sorted((k for k in kids if k[1] is not None), key=lambda t:t[1], reverse=self.sort_dir=='desc')
+            for i,(iid,_) in enumerate(full+[k for k in kids if k[1] is None]):
                 self.tree.move(iid,parent,i)
     def visible_expense_ids(self):
         """Every expense id the tree is currently showing, in display order — report children included,
