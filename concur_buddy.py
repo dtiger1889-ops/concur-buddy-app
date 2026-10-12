@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.12.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.12.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -1772,14 +1772,17 @@ class ExpenseDialog(tk.Toplevel):
         add('Apply template', tpl_row)
         add('User', ttk.Combobox(frm, textvariable=self.user_var, values=list(self.user_map), state='readonly'))
         # Assign the expense to one of this user's reports right here (no need for the separate Assign-to-Report step).
-        # Open (not-yet-filed) reports come first and already-filed ones are labelled as such — same reasoning as
-        # AssignReportDialog: the reports you can still add to must not be lost among the ones already submitted.
+        # The dropdown lists only reports you can still add to; filed ones stay reachable from the main window's
+        # Add to report… (2026-10-12). The one this expense already sits in is listed even when filed, so opening
+        # it never silently reads "(No report)". report_map keeps every report so a label always maps back.
         self.report_map={report_choice_label(r):r['id'] for r in
                          S.rows("SELECT id,name,status FROM reports WHERE user_id=? "
                                 "ORDER BY (status='Filed'), created_at DESC",(self.user_map.get(user_name),))}
         cur_rep=next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT)
         self.report_var=tk.StringVar(value=cur_rep)
-        add('Expense report', ttk.Combobox(frm, textvariable=self.report_var, values=[NO_REPORT]+list(self.report_map), state='readonly'))
+        self.report_cb=ttk.Combobox(frm, textvariable=self.report_var, state='readonly')
+        self._report_choices(data.get('report_id'))
+        add('Expense report', self.report_cb)
         date_frame=ttk.Frame(frm); date_frame.columnconfigure(0, weight=1)
         ttk.Entry(date_frame, textvariable=v('transaction_date', today())).grid(row=0,column=0,sticky='ew')
         ttk.Button(date_frame, text='📅', width=3, command=lambda:CalendarPopup(self, self.vars['transaction_date'])).grid(row=0,column=1,padx=(4,0))
@@ -1834,6 +1837,10 @@ class ExpenseDialog(tk.Toplevel):
         out={k:(v.get('1.0','end') if isinstance(v, tk.Text) else v.get()) for k,v in self.vars.items()}
         out['_user']=self.user_var.get(); out['_report']=self.report_var.get()
         return out
+    def _report_choices(self, current_id=None):
+        """Open reports, plus the expense's own report if that one is already filed."""
+        self.report_cb['values']=[NO_REPORT]+[n for n,i in self.report_map.items()
+                                              if not n.endswith('(filed)') or i==current_id]
     def _nav_ids(self):
         """The expense ids the main list is showing, in the order it is showing them.
 
@@ -1862,6 +1869,7 @@ class ExpenseDialog(tk.Toplevel):
             else: var.set(q(val))
         self.user_var.set(next((n for n,i in self.user_map.items() if i==data.get('user_id')), self.user_var.get()))
         self.report_var.set(next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT))
+        self._report_choices(data.get('report_id'))
         self.tpl_var.set(NO_TEMPLATE)
         self._staged=[]  # files staged for the expense we just left belong to IT, not to this one
         self._baseline=self._snapshot(); self._update_nav()
@@ -2907,8 +2915,13 @@ class ConcurImportDialog(tk.Toplevel):
         rep.attach(namebox)
         mergebox=ttk.LabelFrame(rep,text=' Or add them to a report you already have ',padding=(6,2))
         self.existing=S.rows("SELECT id,name,status FROM reports WHERE user_id=? ORDER BY (status='Filed'), name",(user_id,))
-        self.merge_choice=tk.StringVar(value=NEW_REPORT)
         self.merge_labels={report_choice_label(r):r['id'] for r in self.existing}
+        # When every matched expense that already sits in a report sits in the SAME one, this export is that
+        # report coming back from Concur: preselect it, so the import joins it instead of making a second,
+        # empty one (2026-10-12). The note under the controls says what Apply will do before anything is written.
+        homes={p['candidates'][p['cand_index']][0]['report_id'] for p in self.plans if p['action']=='merge'}-{None}
+        home=next((n for n,i in self.merge_labels.items() if i in homes), None) if len(homes)==1 else None
+        self.merge_choice=tk.StringVar(value=home or NEW_REPORT)
         cb=ttk.Combobox(mergebox,textvariable=self.merge_choice,width=26,state='readonly',
                         values=[NEW_REPORT]+list(self.merge_labels))
         cb.pack(side='left'); cb.bind('<<ComboboxSelected>>', lambda e: self._merge_note())
@@ -3043,7 +3056,7 @@ class ConcurImportDialog(tk.Toplevel):
         if not sel: messagebox.showinfo('Review','Select a row first.',parent=self); return
         ImportRowDialog(self, sel[0], on_done=self.refresh)
     def apply(self):
-        name=self.report_name.get().strip(); rid=self._merge_target(); renamed=None
+        name=self.report_name.get().strip(); rid=self._merge_target(); renamed=None; skipped_report=None
         if rid is not None:
             # Merging into a report already here. Concur's name is canonical, so it wins over whatever he
             # called it before the report existed in Concur — unless he unticks the rename box.
@@ -3053,7 +3066,13 @@ class ConcurImportDialog(tk.Toplevel):
             else: name=was
         elif name:
             got=S.row('SELECT id FROM reports WHERE user_id=? AND name=?',(self.user_id,name))
-            rid=got['id'] if got else S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
+            # A new report is made only if something will land in it: a new expense, or an update to one not
+            # in a report yet. Updated expenses never move out of their report, so otherwise it stays empty.
+            lands=any(p['action']=='new' or (p['action']=='merge' and p['candidates'][p['cand_index']][0]['report_id'] is None)
+                      for p in self.plans)
+            if got: rid=got['id']
+            elif lands: rid=S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
+            else: skipped_report=name
         merged=new=skipped=codes=templated=0; flags=[]
         for p in self.plans:
             r=p['row']
@@ -3090,6 +3109,8 @@ class ConcurImportDialog(tk.Toplevel):
         msg=f"Updated: {merged}\nAdded as new: {new}\nIgnored: {skipped}"
         if templated: msg+=f"\nFilled in from your saved templates: {templated}"
         if rid: msg+=f'\n\nReport: "{name}"'
+        if skipped_report: msg+=(f'\n\nNo report "{skipped_report}" was made: every expense updated is already in a '
+                                 'report, and it stays there.')
         if renamed: msg+=f'\nRenamed report "{renamed[0]}" to "{renamed[1]}" (Concur\'s name).'
         if codes: msg+=f"\nAdded {codes} new expense type{'' if codes==1 else 's'} to your Expense Codes list."
         if flags: msg+=('\n\nYou have a receipt for these in Concur Buddy, but Concur says it does not have one yet. '

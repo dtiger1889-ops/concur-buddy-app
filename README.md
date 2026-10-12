@@ -330,10 +330,11 @@ amount, expense code, and report grouping are carried over; the attached files a
 opens the copy for editing. Handy for logging a run of similar expenses without retyping. Inside the expense dialog,
 **Copy to New** does the same from the open expense: it saves what's on screen, then opens a fresh Draft copy.
 
-**Which reports the picker offers.** Both the *Add to report…* list and the expense dialog's **Expense report**
-dropdown put the reports you can still add to — the ones **not yet filed** — at the top, under an *Open reports*
-heading, with the ones already filed in Concur below their own heading (the dropdown labels those `(filed)`
-instead). Assigning to a filed report is still allowed; it just won't change what Concur already has.
+**Which reports the picker offers.** The expense dialog's **Expense report** dropdown lists only the reports you
+can still add to — the ones **not yet filed** — so it stays short. (If the expense already sits in a filed
+report, that one shows too, labelled `(filed)`.) The *Add to report…* list on the main window offers every
+report: the open ones at the top under an *Open reports* heading, the ones already filed in Concur below their
+own heading. Assigning to a filed report is still allowed there; it just won't change what Concur already has.
 
 **Filing several expenses into a report at once:** hold **Ctrl** (or **Shift**) and click to select multiple
 expenses, then either **right-click → "Add to report…"** or **drag the selected rows onto a report row** — the
@@ -441,7 +442,8 @@ still needs uploading.
 an import with a name creates that report (or joins one that already has that exact name); leave it blank to
 keep the expenses out of any report. If you had already started the trip as a report in Concur Buddy under a
 name of your own, pick that report under **Or add them to a report you already have** and the import joins it
-instead of creating a second report for the same trip. Because Concur's name is the canonical one, that report is **renamed** to the name in the box by
+instead of creating a second report for the same trip. When the expenses it matches already sit in one report,
+that report is picked for you; and a new report is only made if something will actually go into it. Because Concur's name is the canonical one, that report is **renamed** to the name in the box by
 default — untick *Rename it to Concur's name* to keep yours. Either way a line under the controls spells out
 exactly what is about to happen ("Joining *the name you gave it* — and renaming it to *the export's name*")
 before you press Apply. Expenses already sitting in some *other* report are never moved.

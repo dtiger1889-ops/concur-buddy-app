@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.10.12.1
+Concur Buddy — version 2026.10.12.3
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,17 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.10.12.3 — FIXES importing a Concur report creating an empty report. When every row in the import updated
+an expense that was already in one of your reports, the import still made a new report under Concur's name,
+and nothing ever went into it (an updated expense never leaves the report it is in). Now the import picks
+that existing report for you under "Or add them to a report you already have", and the line below says what
+will happen before you press Apply. And if you switch it back, no report is made unless something will
+actually go into it.
+
+2026.10.12.2 — the Expense report dropdown on an expense now lists only reports that are not filed yet, so it
+stays short. To add something to a filed report, right-click it on the main window and choose Add to report….
+An expense that already sits in a filed report still shows that report.
 
 2026.10.12.1 — every column heading now sorts the list, not just Amount. Click once to sort, again to reverse,
 a third time to go back to date order. Dates sort as dates, amounts as numbers, and Status follows its order
