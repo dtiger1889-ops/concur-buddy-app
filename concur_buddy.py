@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.12.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.10.16.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -506,6 +506,10 @@ def safe_filename(s):
 def money_part(amount):
     try: return f"{float(clean_number(amount)):.2f}"
     except Exception: return "0.00"
+MONEY_FIELDS = ('amount', 'amount_after_fee')
+def field_text(name, val):
+    """How a stored value reads in an entry box: money always to the cent (4752.8 -> 4752.80), blanks stay blank."""
+    return money_part(val) if name in MONEY_FIELDS and q(val).strip() else q(val)
 def autofill_filename(n, total):
     """A unique-per-export name so successive exports never collide or overwrite each other.
     Everything in it is procedurally derived: a UTC stamp to the second, how many expenses the
@@ -1141,7 +1145,7 @@ FIELD_LABELS = {'_expense_type': 'Expense type', 'transaction_date': 'Transactio
                 'city': 'City', 'state': 'State', 'country': 'Country', 'comment': 'Comment', 'attendees': 'Attendees',
                 'is_vendor_invoice': 'Is a vendor invoice', 'personal_no_reimburse': 'Personal / no reimburse',
                 'missing_receipt_ack': 'Missing receipt acknowledgment'}
-MATCH_DAY_WINDOW = 31  # how far apart two dates can be and still be PROPOSED as the same charge
+MATCH_DAY_WINDOW = 0  # how far apart two dates can be and still be PROPOSED as the same charge (same day only)
 def _col_index(ref):
     n = 0
     for ch in ref: n = n * 26 + (ord(ch) - 64)
@@ -1249,17 +1253,17 @@ def match_concur_row(row, expenses, taken=()):
 def propose_matches(rows, expenses):
     """For every imported row: (candidates, index of the proposed merge or None for "add as new").
 
-    A same-amount row is only PROPOSED when its date is within MATCH_DAY_WINDOW (card post dates lag the
-    transaction; a statement cycle is about a month). A lookalike vendor name alone is not enough: a monthly
-    subscription is the same vendor at the same amount every month, so the name can't tell this month's
-    charge from last month's already-filed one. For the same reason an expense already marked Filed is only
-    proposed on the exact same date (re-importing a report you filed); a month apart is the next charge.
+    A same-amount row is only PROPOSED when its date is within MATCH_DAY_WINDOW, i.e. the same day. A
+    month-wide window folded a monthly charge into last month's still-open expense (user report,
+    2026-10-14), and a lookalike vendor name can't help: a subscription is the same vendor at the same
+    amount every month. A same-amount expense on another date is still listed for review, one click away;
+    a wrong default there costs a visible extra row, where a wrong merge silently rewrites an old expense.
     Pairs are claimed closest-date-first across the WHOLE file,
     not in file order, so two identical charges each land on their own nearest expense. One staged expense
     absorbs at most one row; anything left over defaults to new, with its candidates one click away."""
     ranked = [match_concur_row(r, expenses) for r in rows]
     pairs = sorted((gap, -sim, i, e['id']) for i, cands in enumerate(ranked)
-                   for e, gap, sim in cands if gap <= MATCH_DAY_WINDOW and (gap == 0 or e['status'] != 'Filed'))
+                   for e, gap, sim in cands if gap <= MATCH_DAY_WINDOW)
     claimed = {}; taken = set()
     for _, _, i, eid in pairs:
         if i in claimed or eid in taken: continue
@@ -1729,7 +1733,7 @@ class ExpenseDialog(tk.Toplevel):
         super().__init__(master); self.exp_id=exp_id; self.title('Expense'); self.transient(master); self.grab_set()
         self.vars={}; self.user_map={r['name']:r['id'] for r in S.rows('SELECT * FROM users ORDER BY name')}
         data=dict(S.row('SELECT * FROM expenses WHERE id=?',(exp_id,))) if exp_id else {}
-        def v(name, default=''): self.vars[name]=tk.StringVar(value=q(data.get(name, default))); return self.vars[name]
+        def v(name, default=''): self.vars[name]=tk.StringVar(value=field_text(name, data.get(name, default))); return self.vars[name]
         def b(name): self.vars[name]=tk.IntVar(value=int(data.get(name,0) or 0)); return self.vars[name]
         user_name=next((n for n,i in self.user_map.items() if i==data.get('user_id')), None) or next((n for n,i in self.user_map.items() if i==default_user_id), None) or list(self.user_map)[0]
         self.user_var=tk.StringVar(value=user_name)
@@ -1866,7 +1870,7 @@ class ExpenseDialog(tk.Toplevel):
             val=data[name]
             if isinstance(var, tk.Text): var.delete('1.0','end'); var.insert('1.0', q(val))
             elif isinstance(var, tk.IntVar): var.set(int(val or 0))
-            else: var.set(q(val))
+            else: var.set(field_text(name, val))
         self.user_var.set(next((n for n,i in self.user_map.items() if i==data.get('user_id')), self.user_var.get()))
         self.report_var.set(next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT))
         self._report_choices(data.get('report_id'))
@@ -1965,7 +1969,7 @@ class ExpenseDialog(tk.Toplevel):
         elif isinstance(v, tk.IntVar):
             try: v.set(int(value) if q(value) not in ('','None') else 0)
             except Exception: pass
-        else: v.set(q(value))
+        else: v.set(field_text(name, value))
     def apply_template(self, e=None):
         name=self.tpl_var.get().strip()
         if not name or name==NO_TEMPLATE: return  # "(none)" is the way OUT of a template, not one to apply
@@ -3584,7 +3588,9 @@ class App(tk.Tk):
         if not term: return True
         col=self.filter_col.get()
         field_map={'vendor':'vendor','amount':'amount','status':'status','code':'expense_type_code','purpose':'business_purpose','date':'transaction_date'}
-        if col=='Any': hay=' '.join(q(e[k]) for k in e.keys()).lower()
+        # Money is searched as shown (4752.80), so typing what you see on screen finds it.
+        if col=='Any': hay=' '.join(field_text(k, e[k]) for k in e.keys()).lower()
+        elif col=='amount': hay=field_text('amount', e['amount'])
         elif col=='doc': hay=self._docs(e).lower()
         elif col=='type': hay=(q(e['expense_type_code'])+' '+q(e['expense_type_label'])).lower()  # 'Expense Type' column: filter code AND label
         else: hay=q(e[field_map.get(col,'vendor')]).lower()
@@ -3953,7 +3959,7 @@ class App(tk.Tk):
         if not p: return
         rows=S.rows('SELECT * FROM expenses ORDER BY transaction_date DESC')
         with open(p,'w',newline='',encoding='utf-8') as f:
-            w=csv.writer(f); w.writerow(rows[0].keys() if rows else ['no rows']); [w.writerow(tuple(r)) for r in rows]
+            w=csv.writer(f); w.writerow(rows[0].keys() if rows else ['no rows']); [w.writerow(tuple(field_text(k, r[k]) if k in MONEY_FIELDS else r[k] for k in r.keys())) for r in rows]
     def export_autofill(self):
         """Write staged expenses as JSON for the Concur Buddy Autofill browser extension.
         Exports the current selection; with nothing selected, every 'Ready to file' expense of the
