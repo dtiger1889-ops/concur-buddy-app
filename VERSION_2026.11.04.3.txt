@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.11.04.2
+Concur Buddy — version 2026.11.04.3
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,15 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.11.04.3 — The Match window is easier to read and makes fewer wrong guesses. Drag the dividers between its
+panes to make any box bigger. The amounts and dates found on a receipt sit in their own labeled box (largest
+amount first, dates spelled out), and the ones the picked expense matches turn green. The match list shows an
+Amount fit, Date fit and Name on receipt column, with a line under it saying why the expense was suggested. A
+close amount (a tip or rounding), or an exact amount on a different date, is now suggested only when the
+expense's vendor name appears on the receipt, so unrelated rides and purchases no longer show up. New:
+Optional tools ▾ lists the add-ons that let the window show and read more kinds of receipts, with a ✓ on the
+installed ones; each explains itself and warns before opening its outside website.
 
 2026.11.04.2 — FIXES expenses ending up under the wrong person. Changing a report's user in its own window used
 to move the report but leave its expenses with the previous person: they still showed inside the report, but

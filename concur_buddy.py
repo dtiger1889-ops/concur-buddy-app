@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.11.04.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.11.04.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -1438,18 +1438,51 @@ def text_dates(text, today=None):
     for _, iso in sorted(found):
         if iso not in out: out.append(iso)
     return out
+def nice_receipt_date(iso):
+    """'2026-11-03' -> 'Tue Nov 3, 2026'; anything unreadable comes back as given."""
+    try: d = date.fromisoformat(q(iso)[:10]); return f'{d:%a} {d:%b} {d.day}, {d.year}'
+    except Exception: return q(iso)
 def _field(e, k):
     try: return e[k]
     except (KeyError, IndexError): return None
 def _gap_words(gap):
     return 'same day' if gap == 0 else ('1 day apart' if gap == 1 else f'{gap} days apart')
+_VENDOR_NOISE = {'the', 'inc', 'llc', 'ltd', 'corp', 'trip', 'tst', 'www', 'com', 'and', 'pos', 'store'}
+def vendor_on_receipt(vendor, text):
+    """True when a real word of the expense's vendor (3+ letters, not 'TRIP'/'TST'/'INC'...) appears anywhere on the
+    receipt. Card descriptors are messy ('TST* SAMPLE NOODLES', 'RIDESHARE *TRIP'), but one word nearly always survives."""
+    words = set(re.findall(r'[a-z]{3,}', q(text).lower()))
+    return any(t in words for t in re.findall(r'[a-z]{3,}', q(vendor).lower()) if t not in _VENDOR_NOISE)
+def receipt_amount_fit(amt, amounts):
+    """(exact, near): the receipt amount equal to the expense to the cent, else the closest receipt amount the
+    expense may be a tip above (up to RECEIPT_TIP_MAX) or a rounding of (RECEIPT_ROUND_SLACK either way). The one
+    amount rule the ranking, the fit column and the green highlight all use."""
+    amt = round(float(amt or 0), 2)
+    if amt <= 0: return None, None
+    exact = next((a for a in amounts if round(a * 100) == round(amt * 100)), None)
+    if exact is not None: return exact, None
+    fits = [a for a in amounts if (0 < amt - a <= a * RECEIPT_TIP_MAX + 0.005) or abs(amt - a) <= RECEIPT_ROUND_SLACK + 0.005]
+    # Ties go to the smaller amount (a tip on top of it), so the answer never depends on the order amounts came in:
+    # the ranking passes them in receipt order, the highlight largest first.
+    return None, (min(fits, key=lambda a: (abs(amt - a), a)) if fits else None)
+def receipt_match_marks(text, amounts, dates, e):
+    """The three short 'fit' cells the match list shows for one expense: (amount, date, vendor). Plain marks a
+    reader scans down a column instead of a sentence per row. amounts/dates are money_values/text_dates of text."""
+    exact, near = receipt_amount_fit(_field(e, 'amount'), amounts)
+    am = '✓ exact' if exact is not None else (f'≈ ${near:,.2f}' if near is not None else ('✗' if amounts else '—'))
+    gap = min((date_gap(d, _field(e, 'transaction_date')) for d in dates), default=999)
+    dm = '—' if gap >= 999 else ('✓ same day' if gap == 0 else (f'✓ {_gap_words(gap)}' if gap <= RECEIPT_DATE_WINDOW else f'✗ {gap} days'))
+    return am, dm, '✓' if vendor_on_receipt(_field(e, 'vendor'), text) else '—'
 def rank_receipt_matches(text, expenses, today=None):
     """Open expenses that fit a receipt, best first: [(expense, tier, why)], at most RECEIPT_MAX_SUGGESTIONS.
 
     Tier 1: an amount equals the expense to the cent AND a date is within RECEIPT_DATE_WINDOW days.
-    Tier 2: the amount equals to the cent, but no date on the receipt is in the window (or it shows none).
+    Tier 2: the amount equals to the cent, but no date on the receipt is in the window. When the receipt shows
+            dates and none is close, the vendor must also be on the receipt (a $4.00 line on another day's
+            receipt is otherwise a coincidence).
     Tier 3: the expense is up to RECEIPT_TIP_MAX above a receipt amount (tip) or within RECEIPT_ROUND_SLACK
-            either way, AND a date is in the window.
+            either way, AND a date is in the window, AND the vendor is on the receipt. Without that last test any
+            ride or coffee within a dollar of some line on an unrelated receipt was suggested.
     Tier 4: the receipt shows no amount at all, but a date matches the expense date exactly.
     Within a tier: the smaller date gap first, then the vendor most like the top of the receipt.
     Filed expenses and ones that already have a receipt are never suggested."""
@@ -1458,21 +1491,18 @@ def rank_receipt_matches(text, expenses, today=None):
     out = []
     for e in expenses:
         if q(_field(e, 'status')) == 'Filed' or q(_field(e, 'receipt_path')).strip(): continue
-        amt = round(float(_field(e, 'amount') or 0), 2); cents = round(amt * 100)
+        amt = round(float(_field(e, 'amount') or 0), 2)
         gap = min((date_gap(d, _field(e, 'transaction_date')) for d in dates), default=None)
         if gap is not None and gap >= 999: gap = None
         in_window = gap is not None and gap <= RECEIPT_DATE_WINDOW
-        exact = next((a for a in amounts if round(a * 100) == cents), None) if amt > 0 else None
-        near = None
-        if amt > 0 and exact is None:
-            fits = [a for a in amounts if (0 < amt - a <= a * RECEIPT_TIP_MAX + 0.005) or abs(amt - a) <= RECEIPT_ROUND_SLACK + 0.005]
-            if fits: near = min(fits, key=lambda a: abs(amt - a))
+        named = vendor_on_receipt(_field(e, 'vendor'), text)
+        exact, near = receipt_amount_fit(amt, amounts)
         when = _gap_words(gap) if in_window else ('no date on the receipt' if not dates else 'no date on the receipt is close')
         if exact is not None and in_window:
             tier, why = 1, f'${exact:,.2f} on the receipt = this expense; {when}'
-        elif exact is not None:
+        elif exact is not None and (named or not dates):
             tier, why = 2, f'${exact:,.2f} on the receipt = this expense; {when}'
-        elif near is not None and in_window:
+        elif near is not None and in_window and named:
             tier, why = 3, f'${near:,.2f} on the receipt, this expense is ${amt:,.2f} (tip or rounding?); {when}'
         elif not amounts and gap == 0:
             tier, why = 4, 'same date; the receipt shows no amount'
@@ -3073,6 +3103,60 @@ def inbox_receipts(folder):
     except Exception: return []
     return [p for _, p in sorted(out, key=lambda t: (-t[0], t[1].lower()))]
 
+def _module_present(name):
+    import importlib.util
+    try: return importlib.util.find_spec(name) is not None
+    except Exception: return False
+def _tesseract_present():
+    if not _module_present('pytesseract'): return False
+    return bool(shutil.which('tesseract')) or any(p.is_file() for p in (
+        Path(os.environ.get('ProgramFiles', r'C:\Program Files'))/'Tesseract-OCR'/'tesseract.exe',
+        Path(os.environ.get('LOCALAPPDATA', ''))/'Programs'/'Tesseract-OCR'/'tesseract.exe'))
+# The optional add-ons the Match window (and OCR) can use: (name, what it adds, install command, page, installed?).
+OPTIONAL_TOOLS = [
+    ('pypdfium2', 'shows PDF pages as pictures and reads scanned PDFs', 'pip install pypdfium2',
+     'https://pypi.org/project/pypdfium2/', lambda: _module_present('pypdfium2')),
+    ('RapidOCR', 'reads the text on photo receipts', 'pip install rapidocr-onnxruntime==1.4.4',
+     'https://pypi.org/project/rapidocr-onnxruntime/', lambda: _module_present('rapidocr_onnxruntime')),
+    ('Pillow', 'shows photo receipts; OCR needs it too', 'pip install pillow',
+     'https://pypi.org/project/pillow/', lambda: _module_present('PIL')),
+    ('pypdf', 'reads the text inside PDFs', 'pip install pypdf',
+     'https://pypi.org/project/pypdf/', lambda: _module_present('pypdf')),
+    ('Tesseract', 'backup reader for photos when RapidOCR is missing (a Windows installer, then pip install pytesseract)',
+     'pip install pytesseract', 'https://github.com/UB-Mannheim/tesseract/wiki', _tesseract_present),
+]
+def optional_tool_notice(tool, installed):
+    """The words shown before an optional tool's web page opens: what it adds, whether it is here, how to add it,
+    and that the link leaves the app for an outside site."""
+    name, adds, cmd, url, _ = tool
+    return (f'{name} {adds}.\n\n'
+            + ('It is installed on this computer.\n\n' if installed else
+               f'It is not installed. To add it, run this in a command prompt, then restart Concur Buddy:\n    {cmd}\n'
+               '(OK also copies that line for you.)\n\n')
+            + f'OK opens {url} in your web browser. That is an outside site: Concur Buddy does not run it or vouch '
+              'for what it offers, so look it over before you download or install anything.')
+def show_optional_tool(parent, tool):
+    """Explain one optional tool, and only on OK copy its install line and open its page."""
+    installed = bool(tool[4]())
+    if not messagebox.askokcancel(f'{tool[0]} (opens an outside website)', optional_tool_notice(tool, installed), parent=parent): return False
+    if not installed:
+        try: parent.clipboard_clear(); parent.clipboard_append(tool[2])
+        except Exception: pass
+    webbrowser.open(tool[3]); return True
+def optional_tools_button(parent):
+    """'Optional tools ▾': each add-on with a ✓ when it is installed; picking one explains it first."""
+    mb = ttk.Menubutton(parent, text='Optional tools ▾')
+    menu = tk.Menu(mb, tearoff=0); mb['menu'] = menu
+    def build():
+        menu.delete(0, 'end')
+        for tool in OPTIONAL_TOOLS:
+            ok = tool[4]()
+            menu.add_command(label=f"{'✓' if ok else '   '}  {tool[0]}: {tool[1]}{'' if ok else '  (not installed)'}",
+                             command=lambda t=tool: show_optional_tool(parent, t))
+        menu.add_separator()
+        menu.add_command(label='These links open outside websites in your browser.', state='disabled')
+    menu.configure(postcommand=build); build()
+    return mb
 class ReceiptMatchDialog(tk.Toplevel):
     """Match a receipt (specs/receipt-match.md): pick an inbox file, see it, read it, and attach it to the open
     expense whose date and amount fit, or start a new expense from it.
@@ -3104,54 +3188,80 @@ class ReceiptMatchDialog(tk.Toplevel):
         Tooltip(cb, "Also look through other users' open expenses.")
         cb=ttk.Checkbutton(bar, text='Show all open expenses', variable=self.show_all, command=self.fill_matches); bar.attach(cb)
         Tooltip(cb, "List every open expense under the suggestions, so you can match a receipt the app couldn't read.")
+        bar.separator()
+        tools=optional_tools_button(bar); bar.attach(tools)
+        Tooltip(tools, 'Add-ons that let this window show and read more kinds of receipts. A ✓ means it is installed.')
         bar.button('Close', self.destroy)
-        body=ttk.Frame(self, padding=6); body.pack(side='top', fill='both', expand=True)
-        body.columnconfigure(0, weight=2); body.columnconfigure(1, weight=3); body.columnconfigure(2, weight=5); body.rowconfigure(1, weight=1)
-        # Inbox list
-        ttk.Label(body, text='Inbox').grid(row=0, column=0, sticky='w')
-        lf=ttk.Frame(body); lf.grid(row=1, column=0, sticky='nsew', padx=(0,6)); lf.rowconfigure(0, weight=1); lf.columnconfigure(0, weight=1)
-        self.inbox_list=tk.Listbox(lf, width=22, height=8, exportselection=False, activestyle='dotbox')
-        self.inbox_list.grid(row=0, column=0, sticky='nsew')
-        sb=ttk.Scrollbar(lf, orient='vertical', command=self.inbox_list.yview); sb.grid(row=0, column=1, sticky='ns')
-        self.inbox_list.configure(yscrollcommand=sb.set)
+        self._why={}; self._rows={}; self._hit_font=tkfont.nametofont('TkDefaultFont').copy(); self._hit_font.configure(weight='bold')
+        st=ttk.Style(self); st.configure('Hit.Toolbutton', foreground='#0a6b2b', font=self._hit_font)
+        # Three columns with draggable dividers (inbox | preview | read + matches): every box can be widened.
+        body=ttk.PanedWindow(self, orient='horizontal'); body.pack(side='top', fill='both', expand=True, padx=6, pady=(6,0))
+        # Inbox list (horizontal scroll too: receipt file names are long)
+        lf=ttk.Frame(body); lf.rowconfigure(1, weight=1); lf.columnconfigure(0, weight=1); body.add(lf, weight=2)
+        ttk.Label(lf, text='Inbox').grid(row=0, column=0, sticky='w')
+        self.inbox_list=tk.Listbox(lf, width=28, height=8, exportselection=False, activestyle='dotbox')
+        self.inbox_list.grid(row=1, column=0, sticky='nsew')
+        sb=ttk.Scrollbar(lf, orient='vertical', command=self.inbox_list.yview); sb.grid(row=1, column=1, sticky='ns')
+        hsb=ttk.Scrollbar(lf, orient='horizontal', command=self.inbox_list.xview); hsb.grid(row=2, column=0, sticky='ew')
+        self.inbox_list.configure(yscrollcommand=sb.set, xscrollcommand=hsb.set)
         self.inbox_list.bind('<<ListboxSelect>>', self._on_list_select)
         # Preview
-        ttk.Label(body, text='Preview').grid(row=0, column=1, sticky='w')
-        pf=ttk.Frame(body); pf.grid(row=1, column=1, sticky='nsew', padx=(0,6)); pf.rowconfigure(0, weight=1); pf.columnconfigure(0, weight=1)
+        pf=ttk.Frame(body, padding=(6,0,0,0)); pf.rowconfigure(1, weight=1); pf.columnconfigure(0, weight=1); body.add(pf, weight=3)
+        ttk.Label(pf, text='Preview').grid(row=0, column=0, sticky='w')
         self.canvas=tk.Canvas(pf, width=240, height=200, background='#f4f4f4', highlightthickness=0)
-        self.canvas.grid(row=0, column=0, sticky='nsew')
-        csb=ttk.Scrollbar(pf, orient='vertical', command=self.canvas.yview); csb.grid(row=0, column=1, sticky='ns')
+        self.canvas.grid(row=1, column=0, sticky='nsew')
+        csb=ttk.Scrollbar(pf, orient='vertical', command=self.canvas.yview); csb.grid(row=1, column=1, sticky='ns')
         self.canvas.configure(yscrollcommand=csb.set)
         self.canvas.bind('<Configure>', self._draw_preview)
         self.canvas.bind('<MouseWheel>', lambda e: self.canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units'))
-        pbar=FlowBar(pf, padding=(0,4)); pbar.grid(row=1, column=0, columnspan=2, sticky='ew')
+        pbar=FlowBar(pf, padding=(0,4)); pbar.grid(row=2, column=0, columnspan=2, sticky='ew')
         self.prev_btn=pbar.button('‹', lambda: self.show_page(-1)); Tooltip(self.prev_btn, 'Previous page')
         self.next_btn=pbar.button('›', lambda: self.show_page(1)); Tooltip(self.next_btn, 'Next page')
         self.page_var=tk.StringVar(); pbar.attach(ttk.Label(pbar, textvariable=self.page_var))
         Tooltip(pbar.button('Open in default viewer', self.open_viewer), 'Open this file in the program Windows uses for it.')
         # Read + match
-        rf=ttk.Frame(body); rf.grid(row=0, column=2, rowspan=2, sticky='nsew'); rf.columnconfigure(0, weight=1); rf.rowconfigure(6, weight=1)
+        rf=ttk.Frame(body, padding=(6,0,0,0)); rf.columnconfigure(0, weight=1); rf.rowconfigure(2, weight=1); body.add(rf, weight=5)
         self.status_lbl=ttk.Label(rf, textvariable=self.status_var, foreground='#1668b8', wraplength=360, justify='left')
         self.status_lbl.grid(row=0, column=0, sticky='ew', pady=(0,4))
         rf.bind('<Configure>', lambda e: self.status_lbl.configure(wraplength=max(120, e.width-8)), add='+')
-        self.date_bar=FlowBar(rf, padding=(0,2)); self.date_bar.grid(row=1, column=0, sticky='ew')
-        self.amount_bar=FlowBar(rf, padding=(0,2)); self.amount_bar.grid(row=2, column=0, sticky='ew')
-        ttk.Label(rf, text='Text read from the receipt').grid(row=3, column=0, sticky='w', pady=(4,0))
-        box, self.text_box=scrolled_text(rf, 5); box.grid(row=4, column=0, sticky='nsew', pady=(0,4))
+        # What was found: one labeled row each, largest amount first (usually the total); a ✓ marks the values the
+        # picked expense matched, and clicking one fills it into a new expense.
+        found=ttk.LabelFrame(rf, text='Found on the receipt', padding=(6,2,6,4)); found.grid(row=1, column=0, sticky='ew', pady=(0,4))
+        found.columnconfigure(1, weight=1)
+        ttk.Label(found, text='Amounts', width=9, foreground='#444').grid(row=0, column=0, sticky='nw', pady=3)
+        self.amount_bar=FlowBar(found, padding=(0,0)); self.amount_bar.grid(row=0, column=1, sticky='ew')
+        ttk.Label(found, text='Dates', width=9, foreground='#444').grid(row=1, column=0, sticky='nw', pady=3)
+        self.date_bar=FlowBar(found, padding=(0,0)); self.date_bar.grid(row=1, column=1, sticky='ew')
+        hint=ttk.Label(found, text='Green = what the picked expense matches. Click an amount or date to fill it into a new expense.',
+                       foreground='#666', wraplength=420, justify='left'); hint.grid(row=2, column=0, columnspan=2, sticky='w', pady=(2,0))
+        found.bind('<Configure>', lambda e: hint.configure(wraplength=max(120, e.width-16)), add='+')
+        # The read text and the match list share one draggable divider, so either can be made taller.
+        vp=ttk.PanedWindow(rf, orient='vertical'); vp.grid(row=2, column=0, sticky='nsew')
+        xf=ttk.Frame(vp); xf.columnconfigure(0, weight=1); xf.rowconfigure(1, weight=1); vp.add(xf, weight=2)
+        ttk.Label(xf, text='Text read from the receipt').grid(row=0, column=0, sticky='w')
+        box, self.text_box=scrolled_text(xf, 6); box.grid(row=1, column=0, sticky='nsew', pady=(0,4))
         self.text_box.configure(state='disabled')
-        ttk.Label(rf, text='Possible matches').grid(row=5, column=0, sticky='w')
-        tf=ttk.Frame(rf); tf.grid(row=6, column=0, sticky='nsew'); tf.rowconfigure(0, weight=1); tf.columnconfigure(0, weight=1)
-        cols=(('date','Date',84), ('vendor','Vendor',120), ('amount','Amount',70), ('report','Report',100), ('why','Why',220))
+        mf=ttk.Frame(vp); mf.columnconfigure(0, weight=1); mf.rowconfigure(1, weight=1); vp.add(mf, weight=3)
+        ttk.Label(mf, text='Possible matches').grid(row=0, column=0, sticky='w')
+        tf=ttk.Frame(mf); tf.grid(row=1, column=0, sticky='nsew'); tf.rowconfigure(0, weight=1); tf.columnconfigure(0, weight=1)
+        cols=(('date','Date',84), ('vendor','Vendor',140), ('amount','Amount',64), ('amt_fit','Amount fit',84),
+              ('date_fit','Date fit',96), ('vendor_fit','Name on receipt',100), ('report','Report',110))
         self.tree=ttk.Treeview(tf, columns=[c for c,_,_ in cols], show='headings', height=5, selectmode='browse')
         for c, title, w in cols:
             self.tree.heading(c, text=title); self.tree.column(c, width=w, minwidth=40, stretch=True, anchor='e' if c=='amount' else 'w')
         self.tree.grid(row=0, column=0, sticky='nsew')
         tsb=ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview); tsb.grid(row=0, column=1, sticky='ns')
-        self.tree.configure(yscrollcommand=tsb.set)
+        txb=ttk.Scrollbar(tf, orient='horizontal', command=self.tree.xview); txb.grid(row=1, column=0, sticky='ew')
+        self.tree.configure(yscrollcommand=tsb.set, xscrollcommand=txb.set)
         self.tree.tag_configure('sep', foreground='#777')
         self.tree.bind('<Double-1>', lambda e: self.attach_to_selected())
+        self.tree.bind('<<TreeviewSelect>>', lambda e: self._mark_found(), add='+')
+        self.why_var=tk.StringVar()
+        self.why_lbl=ttk.Label(mf, textvariable=self.why_var, foreground='#333', wraplength=420, justify='left')
+        self.why_lbl.grid(row=2, column=0, sticky='ew', pady=(4,0))
+        mf.bind('<Configure>', lambda e: self.why_lbl.configure(wraplength=max(120, e.width-8)), add='+')
         self._fill_found([], [])
-        fit_to_screen(self, min_w=860, min_h=520)
+        fit_to_screen(self, min_w=1000, min_h=620)
         self.load_inbox()
         if self.files: self.pick_index(0)
         else: self._idle_message()
@@ -3175,7 +3285,7 @@ class ReceiptMatchDialog(tk.Toplevel):
     def _idle_message(self):
         self.cur=None; self._flip+=1; self._set_busy(True); self._set_text('')   # _flip: a pending preview lands nowhere
         self._preview_img=None; self._preview_msg=''; self._draw_preview()
-        self.tree.delete(*self.tree.get_children()); self._fill_found([], [])
+        self.tree.delete(*self.tree.get_children()); self.why_var.set(''); self._fill_found([], [])
         self.status_var.set('Your inbox has no receipts in it (PDF, JPG or PNG).' if not self.files else 'Pick a file in the inbox list.')
     def pick_index(self, i):
         if not 0 <= i < len(self.files): return
@@ -3197,7 +3307,7 @@ class ReceiptMatchDialog(tk.Toplevel):
             except Exception: pass
             self._poll_job=None
         self._text=''; self.pick_amount.set(''); self.pick_date.set('')
-        self._set_text(''); self.tree.delete(*self.tree.get_children()); self._fill_found([], [])
+        self._set_text(''); self.tree.delete(*self.tree.get_children()); self.why_var.set(''); self._fill_found([], [])
         self.status_var.set('Reading the receipt…'); self._set_busy(True)
         self._load_preview(path)
         box={}
@@ -3228,32 +3338,60 @@ class ReceiptMatchDialog(tk.Toplevel):
     def _set_text(self, text):
         t=self.text_box; t.configure(state='normal'); t.delete('1.0', 'end'); t.insert('1.0', text); t.configure(state='disabled')
     def _fill_found(self, dates, amounts):
-        """The dates and amounts found, as toggles: at most one of each picked (clicking it again un-picks)."""
-        for bar, label, values, var, shown in ((self.date_bar, 'Dates:', dates, self.pick_date, lambda v: v),
-                                              (self.amount_bar, 'Amounts:', [f'{a:.2f}' for a in amounts], self.pick_amount, lambda v: f'${float(v):,.2f}')):
+        """The dates and amounts found, as toggles: at most one of each picked (clicking it again un-picks).
+        Amounts largest first, because the largest is usually the total; dates spelled out ('Tue Nov 3, 2026')
+        so month and day can't be swapped by eye."""
+        for bar, values, var, shown, tip in (
+                (self.date_bar, list(dates), self.pick_date, nice_receipt_date, None),
+                (self.amount_bar, [f'{a:.2f}' for a in sorted(amounts, reverse=True)], self.pick_amount,
+                 lambda v: f'${float(v):,.2f}', 'The largest amount, usually the total.')):
             for w in bar.items: w.destroy()
             bar.items=[]
-            bar.attach(ttk.Label(bar, text=label if values else f'{label} none found', foreground='#555'))
-            for v in values:
-                bar.attach(ttk.Checkbutton(bar, text=shown(v), variable=var, onvalue=v, offvalue='', style='Toolbutton'))
+            if not values: bar.attach(ttk.Label(bar, text='none found', foreground='#777'))
+            for i, v in enumerate(values):
+                w=ttk.Checkbutton(bar, text=shown(v), variable=var, onvalue=v, offvalue='', style='Toolbutton')
+                w._cb_value=v; bar.attach(w)
+                if i == 0 and tip and len(values) > 1: Tooltip(w, tip)
+    def _mark_found(self):
+        """Turn the found values the picked expense matches green and bold, and spell out why it was suggested."""
+        sel=[i for i in self.tree.selection() if i.startswith('E')]
+        e=self._rows.get(sel[0]) if sel else None
+        amounts=[float(w._cb_value) for w in self.amount_bar.items if hasattr(w, '_cb_value')]
+        exact, near = receipt_amount_fit(e['amount'], amounts) if e else (None, None)
+        used = exact if exact is not None else near   # the amount the ranking used, never just the nearest number
+        dates=[w._cb_value for w in self.date_bar.items if hasattr(w, '_cb_value')]
+        gaps={d: date_gap(d, e['transaction_date']) for d in dates} if e else {}
+        best=min(gaps.values(), default=999)
+        for w in self.amount_bar.items + self.date_bar.items:
+            if not hasattr(w, '_cb_value'): continue
+            v=w._cb_value
+            if w in self.amount_bar.items: hit = used is not None and abs(float(v)-used) < 0.005
+            else: hit = e is not None and gaps.get(v) == best and best <= RECEIPT_DATE_WINDOW
+            w.configure(style='Hit.Toolbutton' if hit else 'Toolbutton')
+        self.why_var.set(f'Why suggested: {self._why[sel[0]]}' if sel and self._why.get(sel[0]) else '')
     def fill_matches(self):
         """Rank the open expenses against what was read; optionally list every other open expense below."""
-        self.tree.delete(*self.tree.get_children())
-        if self.cur is None or self._busy: return
+        self.tree.delete(*self.tree.get_children()); self._why={}; self._rows={}; self.why_var.set('')
+        if self.cur is None or self._busy: self._mark_found(); return
         everyone=bool(self.all_users.get())
         pool=receipt_match_pool(self._user_id(), everyone)
         sugg=rank_receipt_matches(self._text, pool)
-        def row(e, why):
+        amounts=money_values(self._text); dates=text_dates(self._text)
+        def row(e):
             vendor=q(e['vendor']) + (f" ({q(e['user_name'])})" if everyone and q(e['user_name']) else '')
-            return (q(e['transaction_date']), vendor, f"{float(e['amount'] or 0):,.2f}", q(e['report_name']), why)
+            am, dm, vm = receipt_match_marks(self._text, amounts, dates, e)
+            return (q(e['transaction_date']), vendor, f"{float(e['amount'] or 0):,.2f}", am, dm, vm, q(e['report_name']))
         shown=set()
         for e, tier, why in sugg:
-            self.tree.insert('', 'end', iid=f"E{e['id']}", values=row(e, why)); shown.add(e['id'])
+            iid=f"E{e['id']}"; self.tree.insert('', 'end', iid=iid, values=row(e)); shown.add(e['id'])
+            self._why[iid]=why; self._rows[iid]=e
         if self.show_all.get():
             rest=[e for e in pool if e['id'] not in shown]
-            if rest: self.tree.insert('', 'end', iid='sep', values=('', '— every other open expense —', '', '', ''), tags=('sep',))
-            for e in rest: self.tree.insert('', 'end', iid=f"E{e['id']}", values=row(e, ''))
+            if rest: self.tree.insert('', 'end', iid='sep', values=('', '— every other open expense —', '', '', '', '', ''), tags=('sep',))
+            for e in rest:
+                iid=f"E{e['id']}"; self.tree.insert('', 'end', iid=iid, values=row(e)); self._rows[iid]=e
         if sugg and sugg[0][1] == 1: self.tree.selection_set(f"E{sugg[0][0]['id']}")
+        self._mark_found()
         if not money_values(self._text) and not text_dates(self._text): self.status_var.set(NOTHING_TO_MATCH)
         elif not sugg: self.status_var.set(NO_FIT)
         else:
@@ -3281,7 +3419,8 @@ class ReceiptMatchDialog(tk.Toplevel):
                     if count: pages=max(1, pdf_page_count(p))
                     img=pdf_preview_image(p, page)
                     if img is None: msg=('No picture of this PDF can be shown here. The text read from it is on the right, and '
-                                         '"Open in default viewer" shows the page. (Installing pypdfium2 shows PDF pages here.)')
+                                         '"Open in default viewer" shows the page. To see PDF pages here, add pypdfium2 '
+                                         '(Optional tools ▾, at the bottom of this window).')
                     elif not img.info.get('cb_rendered'): msg=pdf_preview_note(p, page)   # above the picture when the page is several tiles
                 else:
                     from PIL import Image, ImageOps

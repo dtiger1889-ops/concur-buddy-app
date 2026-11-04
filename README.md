@@ -257,9 +257,13 @@ puts them side by side:
 
 1. **Pick a file** in the inbox list on the left (PDF, JPG or PNG, newest first). It shows in the preview, and
    the app reads it.
-2. **Every date and amount on it** shows as a button, and **Possible matches** lists your open expenses whose
-   amount and date fit: the exact amount within a few days first, then the exact amount on any date, then a
-   close amount (a tip or rounding) within a few days. The **Why** column says what matched.
+2. **Found on the receipt** lists every amount (largest first, usually the total) and every date on it, and
+   **Possible matches** lists your open expenses that fit: the exact amount within a few days first, then the
+   exact amount on another date, then a close amount (a tip or rounding) within a few days. A guess on a close
+   amount, or on an exact amount from a different date, also needs the expense's vendor name on the receipt.
+   The **Amount fit**, **Date fit** and **Name on receipt** columns show what matched (✓, ≈ close, ✗ no), the
+   values the picked expense matched turn green above, and the line under the list says why it was suggested.
+   Drag the dividers between the panes to make any box bigger.
 3. **Attach to selected expense** opens that expense with the file attached. Check it and press **Save**.
    Closing it without saving puts the file back in your inbox.
 4. **No match?** Click the date and amount you want, then **New expense from this receipt**. Only what you
@@ -268,7 +272,9 @@ puts them side by side:
 After each one the window moves to the next file, so a stack of receipts clears in one sitting. **Skip** leaves
 a file for later. The list covers the user picked on the main window and only expenses without a receipt yet;
 tick **All users** to include everyone, or **Show all open expenses** to pick by hand when a receipt can't be
-read. The **Receipt / Invoice** switch says which slot the file goes into.
+read. The **Receipt / Invoice** switch says which slot the file goes into. **Optional tools ▾** lists the add-ons
+that let the window show and read more kinds of receipts, with a ✓ on the ones installed. Picking one explains
+it, gives the install line, and warns that its link opens an outside website before anything opens.
 
 ### OCR (reading text out of a receipt)
 With OCR installed (see [Install](#install--run)), **OCR Receipt** / **OCR Invoice** pull the text out of the
