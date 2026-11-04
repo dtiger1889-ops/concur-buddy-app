@@ -26,14 +26,14 @@ filled one; merging an expense keeps every export column that has no field here 
 dropping it; a row with no amount is never merged automatically; and repeat imports no longer add the same
 notes twice.
 
-2026.10.16.1 —FIXES importing a Concur report that holds two charges of the same price on different dates,
+2026.10.16.1 — FIXES importing a Concur report that holds two charges of the same price on different dates,
 such as a monthly subscription. If last month's charge was already here and not yet filed, this month's charge
 was treated as the same one: it updated last month's expense instead of being added. Now an imported charge
 is only treated as one you already have when the price AND the date match. A same-price expense on another
 date is still listed beside the row, so you can match it by hand if it really is the same charge. Also, money
 now always shows two decimals (4752.80, not 4752.8) in the expense window, the search box and the CSV export.
 
-2026.10.12.3 —FIXES importing a Concur report creating an empty report. When every row in the import updated
+2026.10.12.3 — FIXES importing a Concur report creating an empty report. When every row in the import updated
 an expense that was already in one of your reports, the import still made a new report under Concur's name,
 and nothing ever went into it (an updated expense never leaves the report it is in). Now the import picks
 that existing report for you under "Or add them to a report you already have", and the line below says what

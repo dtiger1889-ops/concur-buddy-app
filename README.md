@@ -70,7 +70,8 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
      `pip install pytesseract`. It is used only when RapidOCR isn't installed or reads nothing.
    - Optional: `pip install pypdfium2` draws PDF pages in the **Match** window's preview and reads any scanned
      PDF. Without it, a scanned PDF is still read from the picture stored inside it (most scanners and phones
-     save it that way), and a PDF with no picture opens in your normal PDF viewer instead.
+     save it that way). An emailed PDF still shows its text and still matches; to see the page itself, press
+     **Open in default viewer**.
 3. **Launch it** — double-click **`run_concur_buddy.bat`**, or from a terminal run:
    ```
    python concur_buddy.py
