@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.10.16.1
+Concur Buddy — version 2026.11.04.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -11,7 +11,22 @@ day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this ma
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
 
-2026.10.16.1 — FIXES importing a Concur report that holds two charges of the same price on different dates,
+2026.11.04.1 — NEW: match receipts to expenses. Press **Match** on the toolbar (or Ctrl+M) when receipts are
+sitting in your inbox folder. Pick one and you see it, the app reads it, and it lists the open expenses whose
+amount and date fit, best first, with the reason beside each. Pick the right one and press Attach: the expense
+opens with the receipt already attached, and Save files it as usual. If nothing fits, "New expense from this
+receipt" starts one with the receipt attached; click a date or amount the app found to use it, since nothing
+is filled in unless you choose it. Close without saving and the receipt goes back to your inbox. Attach File
+moved into More ▾ to make room. Scanned PDFs can now be read too (before, they said "Couldn't read text from
+this file"). Optional: `pip install pypdfium2` shows emailed PDFs as pictures in the Match window; without it
+they show as text and still match.
+Also in this release, fixes to importing a Concur report: an import where every row is ignored no longer
+renames the report you picked; a row whose usual amount column is blank now takes its amount from the next
+filled one; merging an expense keeps every export column that has no field here in its loose notes instead of
+dropping it; a row with no amount is never merged automatically; and repeat imports no longer add the same
+notes twice.
+
+2026.10.16.1 —FIXES importing a Concur report that holds two charges of the same price on different dates,
 such as a monthly subscription. If last month's charge was already here and not yet filed, this month's charge
 was treated as the same one: it updated last month's expense instead of being added. Now an imported charge
 is only treated as one you already have when the price AND the date match. A same-price expense on another

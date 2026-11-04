@@ -32,6 +32,7 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
   - [Receipts vs. invoices](#receipts-vs-invoices)
   - [Status lifecycle](#status-lifecycle)
   - [Attaching files & how they're organized on disk](#attaching-files--how-theyre-organized-on-disk)
+  - [Match a receipt](#match-a-receipt)
   - [OCR (reading text out of a receipt)](#ocr-reading-text-out-of-a-receipt)
   - [Expense codes](#expense-codes)
   - [Oracle / account codes](#oracle--account-codes)
@@ -67,6 +68,9 @@ Everything is **local** — a single SQLite file on your own machine. Nothing is
    - `pip install rapidocr-onnxruntime==1.4.4 pillow pypdf` (about 180 MB; no separate installer needed).
    - Optional fallback: [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki) plus
      `pip install pytesseract`. It is used only when RapidOCR isn't installed or reads nothing.
+   - Optional: `pip install pypdfium2` draws PDF pages in the **Match** window's preview and reads any scanned
+     PDF. Without it, a scanned PDF is still read from the picture stored inside it (most scanners and phones
+     save it that way), and a PDF with no picture opens in your normal PDF viewer instead.
 3. **Launch it** — double-click **`run_concur_buddy.bat`**, or from a terminal run:
    ```
    python concur_buddy.py
@@ -100,7 +104,7 @@ exists by default as an example; rename or replace it with your own.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ User [▼]  Filter [Any ▼]  [search…]  Status [All ▼]  ☐ Show Filed         │  ← filter row
 ├──────────────────────────────────────────────────────────────────────────┤
-│ Quick Add  New Report │ Edit  Attach File  Mark Filed │ Add to Report     │  ← toolbar (the everyday actions,
+│ Quick Add  New Report │ Edit  Match  Mark Filed │ Add to Report           │  ← toolbar (the everyday actions,
 │ Open Receipt/Invoice │ Delete │ Ask for Receipts  Open Concur  [More ▾]   │     grouped; wraps when narrow)
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 5 open receipts · 2 need a receipt · 1 ready to file                      │  ← counter (click it to tick
@@ -115,13 +119,13 @@ exists by default as an example; rename or replace it with your own.
 
 The toolbar carries only the **everyday actions**, grouped by dividers. Everything else lives one click away
 under **More ▾**: the four glossaries (Expense Codes / Oracle Codes / Vendors / Templates), Copy Expense,
-Move to User…, Add User…, the clipboard helpers (Copy Concur Summary / Copy Attendees), folder shortcuts
-(Open File Location / Open Receipt Root / Open Inbox), Export/Import, Refresh, Settings, and About. Row-scoped
+Move to User…, Add User…, the clipboard helpers (Copy Concur Summary / Copy Attendees), Attach File, folder
+shortcuts (Open File Location / Open Receipt Root / Open Inbox), Export/Import, Refresh, Settings, and About. Row-scoped
 actions are also on the **right-click menu** directly on a row: *Add to report*, *Copy expense*, *Edit*,
 *Open receipt/invoice*, *Open file location*, *Open report folder*, *Copy Concur summary*, *Ask for these
 receipts*, *Move to user*, *Mark filed* and *Delete*.
 
-**Keyboard shortcuts:** `Ctrl+N` new expense · `Ctrl+Shift+N` new report · `F2` edit selected · `Ctrl+D` copy
+**Keyboard shortcuts:** `Ctrl+N` new expense · `Ctrl+Shift+N` new report · `Ctrl+M` match a receipt · `F2` edit selected · `Ctrl+D` copy
 expense · `Delete` delete selection · `Space` tick/untick the current row · `F5` refresh.
 (`Delete`/`Ctrl+D` only act when the table itself has focus — pressing Delete inside the search box never
 deletes an expense.) `Esc` closes any dialog.
@@ -157,9 +161,10 @@ whatever you have selected (a ticked report counts every expense in it).
 
 1. **You spend money.** Open the app, click **Quick Add**, type the **vendor name**, click **Save**. Done — the
    date is logged for you and the expense sits in *Draft*. Everything else can wait.
-2. **The receipt arrives** (or you download a PDF invoice). Select the expense → **Attach File** → pick **Attach
-   Receipt** or **Attach Invoice**. The file is renamed and filed on disk automatically, and the status moves
-   forward on its own.
+2. **The receipt arrives** (or you download a PDF invoice) into your inbox folder. Click **Match**, pick the
+   file, and attach it to the expense it suggests (or start a new one from it); see
+   [Match a receipt](#match-a-receipt). Or open the expense and use **Attach Receipt** / **Attach Invoice**.
+   Either way the file is renamed and filed on disk automatically, and the status moves forward on its own.
 3. **Fill in the rest when convenient** — amount, expense code, business purpose, attendees. The app remembers
    the code you used last time for that vendor. Attached the wrong file? **Detach Receipt / Detach Invoice**
    (in the expense dialog) un-links it — nothing is ever deleted — and offers to move the file back to your
@@ -242,14 +247,35 @@ Naming collisions get a `(2)`, `(3)` suffix automatically.
 - If the file came **from your inbox folder**, it is **moved** (the original leaves the inbox).
 - If it came from anywhere else, it is **copied** (your original is left untouched).
 
-The **Attach File** button on the main window opens the selected expense's dialog; with nothing selected it just
-opens your receipt-root folder.
+**More ▾ → Attach File** opens the selected expense's dialog; with nothing selected it just opens your
+receipt-root folder.
+
+### Match a receipt
+Receipts often land in your inbox folder before you know which expense they belong to. **Match** (`Ctrl+M`)
+puts them side by side:
+
+1. **Pick a file** in the inbox list on the left (PDF, JPG or PNG, newest first). It shows in the preview, and
+   the app reads it.
+2. **Every date and amount on it** shows as a button, and **Possible matches** lists your open expenses whose
+   amount and date fit: the exact amount within a few days first, then the exact amount on any date, then a
+   close amount (a tip or rounding) within a few days. The **Why** column says what matched.
+3. **Attach to selected expense** opens that expense with the file attached. Check it and press **Save**.
+   Closing it without saving puts the file back in your inbox.
+4. **No match?** Click the date and amount you want, then **New expense from this receipt**. Only what you
+   clicked is filled in; nothing is guessed for you.
+
+After each one the window moves to the next file, so a stack of receipts clears in one sitting. **Skip** leaves
+a file for later. The list covers the user picked on the main window and only expenses without a receipt yet;
+tick **All users** to include everyone, or **Show all open expenses** to pick by hand when a receipt can't be
+read. The **Receipt / Invoice** switch says which slot the file goes into.
 
 ### OCR (reading text out of a receipt)
 With OCR installed (see [Install](#install--run)), **OCR Receipt** / **OCR Invoice** pull the text out of the
 attached file into the *OCR / extracted text* box — handy for grabbing an amount or invoice number. Machine-readable
-PDFs are read directly (via `pypdf`); photos are read by RapidOCR, with Tesseract as the fallback. Without OCR installed, the box
-shows a short note telling you what to install — the rest of the app works fine.
+PDFs are read directly (via `pypdf`); photos are read by RapidOCR, with Tesseract as the fallback. A scanned PDF
+(no text in it) is read from the picture stored in each page, or from the page itself when `pypdfium2` is
+installed. Without OCR installed, the box shows a short note telling you what to install — the rest of the app
+works fine.
 
 ### Expense codes
 The **Expense Codes** glossary is a searchable list of expense-type codes. **No code list ships with the

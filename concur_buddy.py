@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.10.16.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.11.04.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -234,22 +234,28 @@ LAST4_PATTERNS = [
 ]
 CARD_PROXIMITY = 120  # characters between the network word and the digits before the match is called "loose"
 _RAPIDOCR = None   # built on first use: loading its models takes a second or two
+def _open_image(src):
+    """A path or an already-open PIL image (a rendered PDF page) -> a PIL image."""
+    from PIL import Image
+    return src if isinstance(src, Image.Image) else Image.open(src)
 def rapidocr_text(path):
     """Read a receipt photo with RapidOCR (the PP-OCR models on ONNX Runtime: CPU only, installs with pip alone).
     On a test set of real phone-photo receipts it read the card on 4 of 9 and the total on 8 of 9, where
-    Tesseract managed 1 and 3. Raises ImportError when it isn't installed; returns '' when it finds no text."""
+    Tesseract managed 1 and 3. Takes a path or a PIL image (a rendered PDF page).
+    Raises ImportError when it isn't installed; returns '' when it finds no text."""
     global _RAPIDOCR
     from rapidocr_onnxruntime import RapidOCR
     import numpy
-    from PIL import Image, ImageOps
+    from PIL import ImageOps
     if _RAPIDOCR is None: _RAPIDOCR = RapidOCR()
-    img = ImageOps.exif_transpose(Image.open(path)).convert('RGB')   # honour phone rotation, flatten MPO/alpha
+    img = ImageOps.exif_transpose(_open_image(path)).convert('RGB')   # honour phone rotation, flatten MPO/alpha
     lines, _ = _RAPIDOCR(numpy.array(img))
     return '\n'.join(line[1] for line in (lines or []))
 def tesseract_text(path):
-    """Read an image with Tesseract (the fallback engine). Raises if pytesseract or the program is missing."""
+    """Read an image (a path or a PIL image) with Tesseract, the fallback engine. Raises if pytesseract or the
+    program is missing."""
     import pytesseract
-    from PIL import Image, ImageOps
+    from PIL import ImageOps
     # The Windows installer does NOT put tesseract.exe on PATH, so a normal install still read as
     # "not installed". Fall back to the standard install folders when PATH has nothing.
     if not shutil.which('tesseract'):
@@ -261,14 +267,16 @@ def tesseract_text(path):
     # the fix for phone JPEGs PIL reports as MPO (multi-picture) or other: pytesseract only
     # accepts a fixed format whitelist and otherwise raises "Unsupported image format/type",
     # even with Tesseract correctly installed.
-    return pytesseract.image_to_string(ImageOps.exif_transpose(Image.open(path)).convert('L'))
+    return pytesseract.image_to_string(ImageOps.exif_transpose(_open_image(path)).convert('L'))
 OCR_INSTALL_HINT = "OCR needs RapidOCR: run  pip install rapidocr-onnxruntime==1.4.4  and restart Concur Buddy (see README setup)."
+NO_TEXT_IN_IMAGE = "No text found in this image."
 def ocr_image_text(path):
-    """The OCR engine selector. Photos go to RapidOCR first; Tesseract runs when RapidOCR isn't installed, fails,
-    or reads nothing. PDFs without a text layer still go straight to Tesseract, as before (known bug: it can't
-    open a PDF; see ROADMAP). Always returns text for the OCR box, including a plain reason when nothing worked."""
+    """The OCR engine selector. Photos (a path or a PIL image, such as a rendered PDF page) go to RapidOCR first;
+    Tesseract runs when RapidOCR isn't installed, fails, or reads nothing. A PDF PATH still goes straight to
+    Tesseract; receipt_text() renders scanned PDF pages to images first when pypdfium2 is installed.
+    Always returns text for the OCR box, including a plain reason when nothing worked."""
     rapid_ran = False
-    if not path.lower().endswith('.pdf'):
+    if not (isinstance(path, str) and path.lower().endswith('.pdf')):
         try:
             text = rapidocr_text(path); rapid_ran = True
             if text.strip(): return text
@@ -285,6 +293,98 @@ def ocr_image_text(path):
         if e.__class__.__name__=='TesseractNotFoundError':
             return "No text found in this image." if rapid_ran else OCR_INSTALL_HINT
         return f"Couldn't read text from this file: {e}"
+PDF_RENDER_HINT = ("This PDF has no text in it, only a picture this computer can't open. "
+                   "Install pypdfium2 to read scanned PDFs:  pip install pypdfium2  (see README setup).")
+PDF_OCR_PAGE_LIMIT = 10   # a receipt is a page or two; this keeps a stray 200-page PDF from stalling the read
+def _pdf_reader(path):
+    try: from pypdf import PdfReader
+    except Exception: from PyPDF2 import PdfReader
+    return PdfReader(path)
+def pdf_text_layer(path):
+    """The text a PDF already carries (emailed and downloaded receipts have it). '' for a scan."""
+    return '\n'.join([(page.extract_text() or '') for page in _pdf_reader(path).pages])
+def pdf_page_count(path):
+    try: return len(_pdf_reader(path).pages)
+    except Exception: return 0
+_PDFIUM_LOCK = threading.Lock()   # every pypdfium2 call goes through this (see pdf_render_page)
+def pdf_render_page(path, index=0, scale=2.0):
+    """One PDF page drawn as a PIL image by pypdfium2 (optional install). Raises ImportError without it.
+    PDFium must never be called from two threads at once, not even for different documents (pypdfium2's
+    'Incompatibility with Threading'), and the Match window's preview and reader workers can both get here,
+    so the whole open/render/convert/close runs under one lock."""
+    import pypdfium2 as pdfium
+    with _PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(path)
+        try: return pdf[index].render(scale=scale).to_pil()
+        finally: pdf.close()
+def pdf_embedded_images(path, index=0):
+    """The pictures stored inside one PDF page, via pypdf (no extra install). A scanner or a phone 'save as PDF'
+    usually stores the whole page as one picture, so this shows and reads a scan without pypdfium2."""
+    out = []
+    try:
+        for item in _pdf_reader(path).pages[index].images:
+            try:
+                img = item.image
+                if img is not None: out.append(img)
+            except Exception: pass   # one odd image must not hide the others
+    except Exception: pass
+    return out
+def pdf_page_images(path, index=0):
+    """Pictures for one PDF page: pypdfium2's rendering when it is installed, else the page's embedded
+    pictures via pypdf. [] when neither gives anything."""
+    try: return [pdf_render_page(path, index)]
+    except ImportError: pass
+    except Exception: pass
+    return pdf_embedded_images(path, index)
+def pdf_preview_image(path, index=0):
+    """The picture to show for one PDF page in the Match window, or None to show a message instead.
+    pypdfium2's rendering is the real page. Without it, an embedded picture stands in for the page only when the
+    page has no text layer (a scan): an emailed receipt's embedded pictures are its logo, not the page. Several
+    pictures -> the largest, which on a scan is the page itself."""
+    try: return pdf_render_page(path, index)
+    except Exception: pass
+    try:
+        if (_pdf_reader(path).pages[index].extract_text() or '').strip(): return None
+    except Exception: pass
+    imgs = pdf_embedded_images(path, index)
+    return max(imgs, key=lambda im: im.width * im.height) if imgs else None
+TILE_MIN_SHARE = 0.10   # a picture under 10% of the largest one's area is a logo or stamp, not part of the page
+def pdf_preview_note(path, index=0):
+    """When a scan's page is stored as several real pictures (tiles), the preview shows only the largest; this
+    says so. '' when pypdfium2 draws the whole page, or there is one picture plus small logos."""
+    try:
+        import pypdfium2   # noqa: F401  (with it, the preview is the whole rendered page)
+        return ''
+    except Exception: pass
+    imgs = pdf_embedded_images(path, index)
+    if len(imgs) < 2: return ''
+    areas = [im.width * im.height for im in imgs]; big = max(areas)
+    n = sum(1 for a in areas if a >= TILE_MIN_SHARE * big)
+    return (f'This page is stored as {n} pictures; only the largest is shown here. '
+            '"Open in default viewer" shows the whole page.') if n > 1 else ''
+def receipt_text(path):
+    """The one text reader for every receipt file. A PDF's own text layer first; a PDF without one (a scan)
+    has its pages turned into pictures (pdf_page_images) and OCR'd; photos go straight to OCR. Never raises:
+    a failure comes back as a plain sentence for the OCR box."""
+    try:
+        if path.lower().endswith('.pdf'):
+            # A text layer pypdf can't extract (an odd font, a damaged content stream) counts as no text, so the
+            # picture routes still get their turn instead of the read stopping at the error.
+            try: text = pdf_text_layer(path)
+            except Exception: text = ''
+            if text.strip(): return text
+            parts = []; got_image = False
+            for i in range(min(pdf_page_count(path), PDF_OCR_PAGE_LIMIT)):
+                for img in pdf_page_images(path, i):
+                    got_image = True
+                    t = ocr_image_text(img)
+                    if t == OCR_INSTALL_HINT: return t
+                    if t.strip() and t != NO_TEXT_IN_IMAGE: parts.append(t)
+            if not got_image: return PDF_RENDER_HINT
+            return '\n'.join(parts) if parts else "No text found in this PDF."
+        return ocr_image_text(path)
+    except Exception as e:
+        return f"Text extraction failed: {e}"
 def cards_for(user_id):
     """That user's cards, plus any left as everyone's. Two people's cards are different cards — matching
     one person's receipt against another's personal Visa would set the wrong payment type on their
@@ -762,16 +862,28 @@ class FlowBar(ttk.Frame):
     can never be clipped off the right edge at any width. Add buttons via .button(text, cmd),
     thin vertical group dividers via .separator(), and any pre-built widget via .attach()."""
     def __init__(self, master, pad=4, **kw):
-        super().__init__(master, **kw); self.pad=pad; self.items=[]
+        super().__init__(master, **kw); self.pad=pad; self.items=[]; self._reflow_job=None
         self.bind('<Configure>', self._reflow)
     def button(self, text, command):
-        b=ttk.Button(self, text=text, command=command); self.items.append(b); self.after_idle(self._reflow); return b
+        b=ttk.Button(self, text=text, command=command); self.items.append(b); self._queue_reflow(); return b
     def separator(self):
         s=ttk.Separator(self, orient='vertical'); s._flow_w=9  # small fixed slot in the flow
-        self.items.append(s); self.after_idle(self._reflow); return s
+        self.items.append(s); self._queue_reflow(); return s
     def attach(self, widget):
         """Add an externally-created child widget (e.g. a Menubutton) into the wrap flow."""
-        self.items.append(widget); self.after_idle(self._reflow); return widget
+        self.items.append(widget); self._queue_reflow(); return widget
+    def _queue_reflow(self):
+        """One pending idle reflow per bar, however many items were added; destroy() cancels it, so a bar torn
+        down before the idle pass leaves no callback behind for Tk to complain about."""
+        if self._reflow_job is None: self._reflow_job=self.after_idle(self._idle_reflow)
+    def _idle_reflow(self):
+        self._reflow_job=None; self._reflow()
+    def destroy(self):
+        if self._reflow_job is not None:
+            try: self.after_cancel(self._reflow_job)
+            except Exception: pass
+            self._reflow_job=None
+        super().destroy()
     def _reflow(self, e=None):
         width=self.winfo_width()
         if width<=1: width=self.winfo_reqwidth() or self.winfo_screenwidth()
@@ -1145,7 +1257,17 @@ FIELD_LABELS = {'_expense_type': 'Expense type', 'transaction_date': 'Transactio
                 'city': 'City', 'state': 'State', 'country': 'Country', 'comment': 'Comment', 'attendees': 'Attendees',
                 'is_vendor_invoice': 'Is a vendor invoice', 'personal_no_reimburse': 'Personal / no reimburse',
                 'missing_receipt_ack': 'Missing receipt acknowledgment'}
+# Several headers mean "amount". When an export carries more than one, the charge wins (it is what a staged
+# expense records and what matching anchors on; Approved can be cut by an approver) and the rest go to _extra.
+AMOUNT_HEADER_ORDER = ('transaction amount', 'requested', 'expense amount', 'amount', 'approved')
 MATCH_DAY_WINDOW = 0  # how far apart two dates can be and still be PROPOSED as the same charge (same day only)
+# Receipt match window (specs/receipt-match.md). Looser than the import on purpose: a paper receipt often shows
+# the pre-tip amount and a date a day or two off the card's. Model defaults, not measured; retune here.
+RECEIPT_DATE_WINDOW = 3      # days between a receipt date and the expense date
+RECEIPT_TIP_MAX = 0.25       # the expense may be up to 25% above a receipt amount (the tip)
+RECEIPT_ROUND_SLACK = 1.00   # ...or within a dollar of it either way (rounding, a small fee)
+RECEIPT_MAX_SUGGESTIONS = 8
+RECEIPT_DATE_RANGE = 400     # dates further than this from today are not receipt dates (a phone number, a "since 1998")
 def _col_index(ref):
     n = 0
     for ch in ref: n = n * 26 + (ord(ch) - 64)
@@ -1184,13 +1306,15 @@ def parse_export_money(s):
     s = q(s).strip()
     v = float(clean_number(s) or 0)
     return -abs(v) if (s.startswith('(') and s.endswith(')')) else v
+EXPORT_DATE_FORMATS = ('%m/%d/%Y', '%Y-%m-%d', '%m/%d/%y', '%d %b %Y', '%b %d, %Y')
+RECEIPT_DATE_FORMATS = EXPORT_DATE_FORMATS + ('%d %B %Y', '%B %d, %Y')   # receipts also spell the month out
 def parse_export_date(s):
     """Concur exports MM/DD/YYYY text; a sheet edited in Excel can hand back a serial number instead."""
     s = q(s).strip()
     if re.fullmatch(r'\d{1,6}(\.\d+)?', s):
         try: return (date(1899, 12, 30) + timedelta(days=int(float(s)))).isoformat()
         except Exception: return ''
-    for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%m/%d/%y', '%d %b %Y', '%b %d, %Y'):
+    for fmt in EXPORT_DATE_FORMATS:
         try: return datetime.strptime(s, fmt).date().isoformat()
         except ValueError: pass
     return s
@@ -1209,13 +1333,16 @@ def parse_concur_export(path):
             head_raw = cells
             head = [re.sub(r'\s+', ' ', c.lower()).strip(' *') for c in cells]
             unknown = [r for r, h in zip(head_raw, head) if h and h not in CONCUR_COLUMNS]
+            amount_cols = [head.index(h) for h in AMOUNT_HEADER_ORDER if h in head]
             continue
+        # Per row: the first amount column, in preference order, that this row actually fills.
+        amount_col = next((i for i in amount_cols if i < len(cells) and cells[i]), None)
         row = {'_extra': {}, '_receipt_in_concur': None}
         for i, val in enumerate(cells):
             h = head[i] if i < len(head) else ''
             if not h or not val: continue
             f = CONCUR_COLUMNS.get(h)
-            if f is None: row['_extra'][head_raw[i]] = val
+            if f is None or (f == 'amount' and i != amount_col): row['_extra'][head_raw[i]] = val
             elif f == 'transaction_date': row[f] = parse_export_date(val)
             elif f == 'amount': row[f] = parse_export_money(val)
             elif f == '_receipt_in_concur': row[f] = _yes(val)
@@ -1250,6 +1377,97 @@ def match_concur_row(row, expenses, taken=()):
            for e in expenses if e['id'] not in taken and round(float(e['amount'] or 0) * 100) == cents]
     out.sort(key=lambda t: (t[1], -t[2]))
     return out
+# Receipt match window helpers (specs/receipt-match.md, steps 2-4). Every amount and every date on the
+# receipt is used; nothing here picks "the total" (ROADMAP item 14 fences that off).
+_DATE_SHAPED = re.compile(r'\b\d{1,4}[./-]\d{1,2}[./-]\d{2,4}\b')
+_MONEY = re.compile(r'(?<![\d.,/-])\$?(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?![\d,/]|[.-]\d)')
+def money_values(text):
+    """Every dollar figure on a receipt, in order, duplicates dropped. A value must show cents, and date-shaped
+    tokens are blanked first, so '11.04.2026', a card's last four, a phone number or a ZIP never read as money."""
+    out = []
+    for whole, cents in _MONEY.findall(_DATE_SHAPED.sub(' ', q(text))):
+        v = round(float(whole.replace(',', '') + '.' + cents), 2)
+        if v not in out: out.append(v)
+    return out
+_MONTH_WORD = r'[A-Za-z]{3,9}'
+_DATE_PATTERNS = [
+    (re.compile(r'\b(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})\b'), lambda g: f'{g[0]}/{g[1]}/{g[2]}'),
+    (re.compile(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b'), lambda g: f'{g[0]}-{int(g[1]):02d}-{int(g[2]):02d}'),
+    (re.compile(r'\b(' + _MONTH_WORD + r')\.? (\d{1,2}),? (\d{4})\b'), lambda g: f'{g[0]} {g[1]}, {g[2]}'),
+    (re.compile(r'\b(\d{1,2}) (' + _MONTH_WORD + r')\.?,? (\d{4})\b'), lambda g: f'{g[0]} {g[1]} {g[2]}'),
+]
+def _receipt_date(s):
+    for cand in (s, re.sub(r'\b([A-Za-z]{3})[A-Za-z]*\b', r'\1', s)):   # 'Sept 3, 2026' -> 'Sep 3, 2026'
+        for fmt in RECEIPT_DATE_FORMATS:
+            try: return datetime.strptime(cand, fmt).date()
+            except ValueError: pass
+    return None
+def text_dates(text, today=None):
+    """Every date on a receipt (ISO strings, in order, no repeats) that falls within RECEIPT_DATE_RANGE days
+    of today. Reads MM/DD/YYYY, MM/DD/YY, YYYY-MM-DD, 'Oct 3, 2026', '3 Oct 2026' and 'October 3, 2026'."""
+    t = today or date.today()
+    if isinstance(t, str): t = date.fromisoformat(t[:10])
+    found = []
+    for rx, shape in _DATE_PATTERNS:
+        for m in rx.finditer(q(text)):
+            d = _receipt_date(shape(m.groups()))
+            if d and abs((d - t).days) <= RECEIPT_DATE_RANGE: found.append((m.start(), d.isoformat()))
+    out = []
+    for _, iso in sorted(found):
+        if iso not in out: out.append(iso)
+    return out
+def _field(e, k):
+    try: return e[k]
+    except (KeyError, IndexError): return None
+def _gap_words(gap):
+    return 'same day' if gap == 0 else ('1 day apart' if gap == 1 else f'{gap} days apart')
+def rank_receipt_matches(text, expenses, today=None):
+    """Open expenses that fit a receipt, best first: [(expense, tier, why)], at most RECEIPT_MAX_SUGGESTIONS.
+
+    Tier 1: an amount equals the expense to the cent AND a date is within RECEIPT_DATE_WINDOW days.
+    Tier 2: the amount equals to the cent, but no date on the receipt is in the window (or it shows none).
+    Tier 3: the expense is up to RECEIPT_TIP_MAX above a receipt amount (tip) or within RECEIPT_ROUND_SLACK
+            either way, AND a date is in the window.
+    Tier 4: the receipt shows no amount at all, but a date matches the expense date exactly.
+    Within a tier: the smaller date gap first, then the vendor most like the top of the receipt.
+    Filed expenses and ones that already have a receipt are never suggested."""
+    amounts = money_values(text); dates = text_dates(text, today)
+    head = '\n'.join(q(text).splitlines()[:5])
+    out = []
+    for e in expenses:
+        if q(_field(e, 'status')) == 'Filed' or q(_field(e, 'receipt_path')).strip(): continue
+        amt = round(float(_field(e, 'amount') or 0), 2); cents = round(amt * 100)
+        gap = min((date_gap(d, _field(e, 'transaction_date')) for d in dates), default=None)
+        if gap is not None and gap >= 999: gap = None
+        in_window = gap is not None and gap <= RECEIPT_DATE_WINDOW
+        exact = next((a for a in amounts if round(a * 100) == cents), None) if amt > 0 else None
+        near = None
+        if amt > 0 and exact is None:
+            fits = [a for a in amounts if (0 < amt - a <= a * RECEIPT_TIP_MAX + 0.005) or abs(amt - a) <= RECEIPT_ROUND_SLACK + 0.005]
+            if fits: near = min(fits, key=lambda a: abs(amt - a))
+        when = _gap_words(gap) if in_window else ('no date on the receipt' if not dates else 'no date on the receipt is close')
+        if exact is not None and in_window:
+            tier, why = 1, f'${exact:,.2f} on the receipt = this expense; {when}'
+        elif exact is not None:
+            tier, why = 2, f'${exact:,.2f} on the receipt = this expense; {when}'
+        elif near is not None and in_window:
+            tier, why = 3, f'${near:,.2f} on the receipt, this expense is ${amt:,.2f} (tip or rounding?); {when}'
+        elif not amounts and gap == 0:
+            tier, why = 4, 'same date; the receipt shows no amount'
+        else: continue
+        out.append((e, tier, why, gap if gap is not None else 999, vendor_similarity(_field(e, 'vendor'), head)))
+    out.sort(key=lambda t: (t[1], t[3], -t[4]))
+    return [(e, tier, why) for e, tier, why, _, _ in out[:RECEIPT_MAX_SUGGESTIONS]]
+def receipt_match_pool(user_id=None, all_users=False):
+    """The expenses a receipt can be matched to: not Filed, no receipt attached yet, and (unless all_users)
+    belonging to the given user. Carries the report name for the match list."""
+    sql = ("SELECT e.*, r.name AS report_name, u.name AS user_name FROM expenses e "
+           "LEFT JOIN reports r ON r.id=e.report_id LEFT JOIN users u ON u.id=e.user_id "
+           "WHERE COALESCE(e.status,'')<>'Filed' AND TRIM(COALESCE(e.receipt_path,''))=''")
+    args = ()
+    if not all_users:
+        sql += " AND e.user_id=?"; args = (user_id,)
+    return S.rows(sql + " ORDER BY e.transaction_date DESC, e.id DESC", args)
 def propose_matches(rows, expenses):
     """For every imported row: (candidates, index of the proposed merge or None for "add as new").
 
@@ -1262,8 +1480,9 @@ def propose_matches(rows, expenses):
     not in file order, so two identical charges each land on their own nearest expense. One staged expense
     absorbs at most one row; anything left over defaults to new, with its candidates one click away."""
     ranked = [match_concur_row(r, expenses) for r in rows]
+    # A row with no amount has no anchor: it reads as $0 and would claim an amount-less staged expense.
     pairs = sorted((gap, -sim, i, e['id']) for i, cands in enumerate(ranked)
-                   for e, gap, sim in cands if gap <= MATCH_DAY_WINDOW)
+                   if q(rows[i].get('amount')).strip() for e, gap, sim in cands if gap <= MATCH_DAY_WINDOW)
     claimed = {}; taken = set()
     for _, _, i, eid in pairs:
         if i in claimed or eid in taken: continue
@@ -2077,10 +2296,13 @@ class ExpenseDialog(tk.Toplevel):
             while d.exists(): d=keep/f"{stem} ({i}){ext}"; i+=1
             shutil.move(old_path, str(d)); return True
         except Exception: return False
-    def attach(self, doc):
+    def attach(self, doc, path=None):
+        """Attach a receipt or invoice. `path` given (the receipt match window) skips the file picker."""
         fld='receipt_path' if doc=='Receipt' else 'invoice_path'
-        _inbox=get_local_setting('inbox_path'); _initial=_inbox if (_inbox and Path(_inbox).exists()) else str(Path.home())
-        p=filedialog.askopenfilename(initialdir=_initial, title=f'Select {doc.lower()}')
+        if path: p=path
+        else:
+            _inbox=get_local_setting('inbox_path'); _initial=_inbox if (_inbox and Path(_inbox).exists()) else str(Path.home())
+            p=filedialog.askopenfilename(initialdir=_initial, title=f'Select {doc.lower()}')
         if not p: return
         # A RE-attach must REPLACE this expense's file, not spawn a "<name> (2)" copy and repoint the DB at
         # the copy (the bug that stranded a receipt once the duplicate was deleted). But it must ALSO never
@@ -2145,14 +2367,7 @@ class ExpenseDialog(tk.Toplevel):
     def ocr(self, path_field):
         p=resolve_attachment(self.vars[path_field].get())
         if not p: messagebox.showinfo('No file', f'Attach a {("receipt" if path_field=="receipt_path" else "invoice")} first.'); return
-        text=''
-        try:
-            if p.lower().endswith('.pdf'):
-                try: from pypdf import PdfReader
-                except Exception: from PyPDF2 import PdfReader
-                text='\n'.join([(page.extract_text() or '') for page in PdfReader(p).pages])
-            if not text: text=ocr_image_text(p)
-        except Exception as e: text=f"Text extraction failed: {e}"
+        text=receipt_text(p)
         self.vars['ocr_text'].delete('1.0','end'); self.vars['ocr_text'].insert('1.0', text)
         self.detect_payment_card(text)
     def detect_payment_card(self, text):
@@ -2789,6 +3004,326 @@ class ReceiptRequestDialog(tk.Toplevel):
         except Exception: pass
         self.destroy()
 
+RECEIPT_EXTS = ('.pdf', '.jpg', '.jpeg', '.png')
+NOTHING_TO_MATCH = "Nothing to match on. Pick from all open expenses, or start a new one."
+NO_FIT = "No open expense fits this receipt's dates and amounts. Pick from all open expenses, or start a new one."
+def inbox_receipts(folder):
+    """Receipt files (PDF, JPG, PNG) sitting in the inbox folder, newest first."""
+    out = []
+    try:
+        for p in Path(folder).iterdir():
+            try:
+                if p.is_file() and p.suffix.lower() in RECEIPT_EXTS: out.append((p.stat().st_mtime, str(p)))
+            except OSError: pass
+    except Exception: return []
+    return [p for _, p in sorted(out, key=lambda t: (-t[0], t[1].lower()))]
+
+class ReceiptMatchDialog(tk.Toplevel):
+    """Match a receipt (specs/receipt-match.md): pick an inbox file, see it, read it, and attach it to the open
+    expense whose date and amount fit, or start a new expense from it.
+
+    Non-modal, so it can sit beside the main list. Nothing is written here: every attach opens the expense
+    editor, and closing that without saving (No = discard) puts the file back in the inbox. The read runs on a
+    worker thread, and each read carries a number so a slow read of an earlier file can never land on a later one."""
+    def __init__(self, master):
+        super().__init__(master); self.title('Match a receipt'); self.transient(master)
+        self.files=[]; self.cur=None; self._text=''; self._read_gen=0; self._poll_job=None; self._busy=False
+        self._page=0; self._pages=1; self._preview_img=None; self._preview_msg=''; self._photo=None
+        self._flip=0; self._preview_job=None
+        self.all_users=tk.IntVar(value=0); self.show_all=tk.IntVar(value=0); self.doc_kind=tk.StringVar(value='Receipt')
+        self.pick_amount=tk.StringVar(value=''); self.pick_date=tk.StringVar(value=''); self.status_var=tk.StringVar()
+        # Buttons first, pinned to the bottom, so they are never the part that gets cut off.
+        bar=FlowBar(self,padding=6); bar.pack(side='bottom',fill='x')
+        self.attach_btn=bar.button('Attach to selected expense', self.attach_to_selected)
+        Tooltip(self.attach_btn, 'Opens the expense picked in the list with this file attached. Check it and press Save. '
+                                 'Closing it without saving puts the file back in your inbox.')
+        self.new_btn=bar.button('New expense from this receipt', self.new_from_receipt)
+        Tooltip(self.new_btn, 'Starts a new expense with this file attached. A date or amount you clicked above '
+                              'is filled in for you; nothing else is.')
+        bar.separator()
+        for val in ('Receipt', 'Invoice'): bar.attach(ttk.Radiobutton(bar, text=val, value=val, variable=self.doc_kind))
+        bar.separator()
+        Tooltip(bar.button('Skip', self.skip), 'Leave this file in the inbox and go to the next one.')
+        bar.separator()
+        cb=ttk.Checkbutton(bar, text='All users', variable=self.all_users, command=self.fill_matches); bar.attach(cb)
+        Tooltip(cb, "Also look through other users' open expenses.")
+        cb=ttk.Checkbutton(bar, text='Show all open expenses', variable=self.show_all, command=self.fill_matches); bar.attach(cb)
+        Tooltip(cb, "List every open expense under the suggestions, so you can match a receipt the app couldn't read.")
+        bar.button('Close', self.destroy)
+        body=ttk.Frame(self, padding=6); body.pack(side='top', fill='both', expand=True)
+        body.columnconfigure(0, weight=2); body.columnconfigure(1, weight=3); body.columnconfigure(2, weight=5); body.rowconfigure(1, weight=1)
+        # Inbox list
+        ttk.Label(body, text='Inbox').grid(row=0, column=0, sticky='w')
+        lf=ttk.Frame(body); lf.grid(row=1, column=0, sticky='nsew', padx=(0,6)); lf.rowconfigure(0, weight=1); lf.columnconfigure(0, weight=1)
+        self.inbox_list=tk.Listbox(lf, width=22, height=8, exportselection=False, activestyle='dotbox')
+        self.inbox_list.grid(row=0, column=0, sticky='nsew')
+        sb=ttk.Scrollbar(lf, orient='vertical', command=self.inbox_list.yview); sb.grid(row=0, column=1, sticky='ns')
+        self.inbox_list.configure(yscrollcommand=sb.set)
+        self.inbox_list.bind('<<ListboxSelect>>', self._on_list_select)
+        # Preview
+        ttk.Label(body, text='Preview').grid(row=0, column=1, sticky='w')
+        pf=ttk.Frame(body); pf.grid(row=1, column=1, sticky='nsew', padx=(0,6)); pf.rowconfigure(0, weight=1); pf.columnconfigure(0, weight=1)
+        self.canvas=tk.Canvas(pf, width=240, height=200, background='#f4f4f4', highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        csb=ttk.Scrollbar(pf, orient='vertical', command=self.canvas.yview); csb.grid(row=0, column=1, sticky='ns')
+        self.canvas.configure(yscrollcommand=csb.set)
+        self.canvas.bind('<Configure>', self._draw_preview)
+        self.canvas.bind('<MouseWheel>', lambda e: self.canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units'))
+        pbar=FlowBar(pf, padding=(0,4)); pbar.grid(row=1, column=0, columnspan=2, sticky='ew')
+        self.prev_btn=pbar.button('‹', lambda: self.show_page(-1)); Tooltip(self.prev_btn, 'Previous page')
+        self.next_btn=pbar.button('›', lambda: self.show_page(1)); Tooltip(self.next_btn, 'Next page')
+        self.page_var=tk.StringVar(); pbar.attach(ttk.Label(pbar, textvariable=self.page_var))
+        Tooltip(pbar.button('Open in default viewer', self.open_viewer), 'Open this file in the program Windows uses for it.')
+        # Read + match
+        rf=ttk.Frame(body); rf.grid(row=0, column=2, rowspan=2, sticky='nsew'); rf.columnconfigure(0, weight=1); rf.rowconfigure(6, weight=1)
+        self.status_lbl=ttk.Label(rf, textvariable=self.status_var, foreground='#1668b8', wraplength=360, justify='left')
+        self.status_lbl.grid(row=0, column=0, sticky='ew', pady=(0,4))
+        rf.bind('<Configure>', lambda e: self.status_lbl.configure(wraplength=max(120, e.width-8)), add='+')
+        self.date_bar=FlowBar(rf, padding=(0,2)); self.date_bar.grid(row=1, column=0, sticky='ew')
+        self.amount_bar=FlowBar(rf, padding=(0,2)); self.amount_bar.grid(row=2, column=0, sticky='ew')
+        ttk.Label(rf, text='Text read from the receipt').grid(row=3, column=0, sticky='w', pady=(4,0))
+        box, self.text_box=scrolled_text(rf, 5); box.grid(row=4, column=0, sticky='nsew', pady=(0,4))
+        self.text_box.configure(state='disabled')
+        ttk.Label(rf, text='Possible matches').grid(row=5, column=0, sticky='w')
+        tf=ttk.Frame(rf); tf.grid(row=6, column=0, sticky='nsew'); tf.rowconfigure(0, weight=1); tf.columnconfigure(0, weight=1)
+        cols=(('date','Date',84), ('vendor','Vendor',120), ('amount','Amount',70), ('report','Report',100), ('why','Why',220))
+        self.tree=ttk.Treeview(tf, columns=[c for c,_,_ in cols], show='headings', height=5, selectmode='browse')
+        for c, title, w in cols:
+            self.tree.heading(c, text=title); self.tree.column(c, width=w, minwidth=40, stretch=True, anchor='e' if c=='amount' else 'w')
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        tsb=ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview); tsb.grid(row=0, column=1, sticky='ns')
+        self.tree.configure(yscrollcommand=tsb.set)
+        self.tree.tag_configure('sep', foreground='#777')
+        self.tree.bind('<Double-1>', lambda e: self.attach_to_selected())
+        self._fill_found([], [])
+        fit_to_screen(self, min_w=860, min_h=520)
+        self.load_inbox()
+        if self.files: self.pick_index(0)
+        else: self._idle_message()
+    # ---- inbox
+    def _user_id(self):
+        try: return self.master.current_user_id()
+        except Exception: return None
+    def load_inbox(self):
+        """Re-list the inbox, keeping the current file selected when it is still there."""
+        self.files=inbox_receipts(get_local_setting('inbox_path') or '')
+        self.inbox_list.delete(0, 'end')
+        for p in self.files: self.inbox_list.insert('end', Path(p).name)
+        if self.cur in self.files:
+            i=self.files.index(self.cur); self.inbox_list.selection_set(i); self.inbox_list.see(i)
+    def refresh(self):
+        """Called by the expense editor after a save: refresh the main list, then this window's inbox."""
+        try: self.master.refresh()
+        except Exception: pass
+        try: self.load_inbox()
+        except Exception: pass
+    def _idle_message(self):
+        self.cur=None; self._flip+=1; self._set_busy(True); self._set_text('')   # _flip: a pending preview lands nowhere
+        self._preview_img=None; self._preview_msg=''; self._draw_preview()
+        self.tree.delete(*self.tree.get_children()); self._fill_found([], [])
+        self.status_var.set('Your inbox has no receipts in it (PDF, JPG or PNG).' if not self.files else 'Pick a file in the inbox list.')
+    def pick_index(self, i):
+        if not 0 <= i < len(self.files): return
+        self.inbox_list.selection_clear(0, 'end'); self.inbox_list.selection_set(i); self.inbox_list.see(i)
+        self._start(self.files[i])
+    def _on_list_select(self, e=None):
+        sel=self.inbox_list.curselection()
+        if sel and sel[0] < len(self.files) and self.files[sel[0]] != self.cur: self._start(self.files[sel[0]])
+    def skip(self):
+        if not self.files: return
+        i=self.files.index(self.cur)+1 if self.cur in self.files else 0
+        if i < len(self.files): self.pick_index(i)
+        else: self.status_var.set('That was the last file in the inbox.')
+    # ---- reading (off the UI thread)
+    def _start(self, path):
+        self.cur=path; self._read_gen+=1; gen=self._read_gen
+        if self._poll_job is not None:
+            try: self.after_cancel(self._poll_job)
+            except Exception: pass
+            self._poll_job=None
+        self._text=''; self.pick_amount.set(''); self.pick_date.set('')
+        self._set_text(''); self.tree.delete(*self.tree.get_children()); self._fill_found([], [])
+        self.status_var.set('Reading the receipt…'); self._set_busy(True)
+        self._load_preview(path)
+        box={}
+        def work():
+            try: box['text']=receipt_text(path)
+            except Exception as e: box['text']=f'Text extraction failed: {e}'
+        threading.Thread(target=work, daemon=True).start()
+        self._poll_job=self.after(100, self._poll, gen, box)
+    def _poll(self, gen, box):
+        self._poll_job=None
+        try:
+            if not self.winfo_exists(): return
+        except Exception: return
+        if gen != self._read_gen: return            # a later file was picked: this result is stale, drop it
+        if 'text' not in box: self._poll_job=self.after(100, self._poll, gen, box); return
+        self._apply(box['text'])
+    def _apply(self, text):
+        self._text=text or ''
+        self._set_text(self._text)
+        self._fill_found(text_dates(self._text), money_values(self._text))
+        self._set_busy(False)
+        self.fill_matches()
+    def _set_busy(self, busy):
+        self._busy=busy
+        for b in (self.attach_btn, self.new_btn):
+            try: b.state(['disabled'] if busy else ['!disabled'])
+            except Exception: pass
+    def _set_text(self, text):
+        t=self.text_box; t.configure(state='normal'); t.delete('1.0', 'end'); t.insert('1.0', text); t.configure(state='disabled')
+    def _fill_found(self, dates, amounts):
+        """The dates and amounts found, as toggles: at most one of each picked (clicking it again un-picks)."""
+        for bar, label, values, var, shown in ((self.date_bar, 'Dates:', dates, self.pick_date, lambda v: v),
+                                              (self.amount_bar, 'Amounts:', [f'{a:.2f}' for a in amounts], self.pick_amount, lambda v: f'${float(v):,.2f}')):
+            for w in bar.items: w.destroy()
+            bar.items=[]
+            bar.attach(ttk.Label(bar, text=label if values else f'{label} none found', foreground='#555'))
+            for v in values:
+                bar.attach(ttk.Checkbutton(bar, text=shown(v), variable=var, onvalue=v, offvalue='', style='Toolbutton'))
+    def fill_matches(self):
+        """Rank the open expenses against what was read; optionally list every other open expense below."""
+        self.tree.delete(*self.tree.get_children())
+        if self.cur is None or self._busy: return
+        everyone=bool(self.all_users.get())
+        pool=receipt_match_pool(self._user_id(), everyone)
+        sugg=rank_receipt_matches(self._text, pool)
+        def row(e, why):
+            vendor=q(e['vendor']) + (f" ({q(e['user_name'])})" if everyone and q(e['user_name']) else '')
+            return (q(e['transaction_date']), vendor, f"{float(e['amount'] or 0):,.2f}", q(e['report_name']), why)
+        shown=set()
+        for e, tier, why in sugg:
+            self.tree.insert('', 'end', iid=f"E{e['id']}", values=row(e, why)); shown.add(e['id'])
+        if self.show_all.get():
+            rest=[e for e in pool if e['id'] not in shown]
+            if rest: self.tree.insert('', 'end', iid='sep', values=('', '— every other open expense —', '', '', ''), tags=('sep',))
+            for e in rest: self.tree.insert('', 'end', iid=f"E{e['id']}", values=row(e, ''))
+        if sugg and sugg[0][1] == 1: self.tree.selection_set(f"E{sugg[0][0]['id']}")
+        if not money_values(self._text) and not text_dates(self._text): self.status_var.set(NOTHING_TO_MATCH)
+        elif not sugg: self.status_var.set(NO_FIT)
+        else:
+            n=len(sugg); self.status_var.set(f"{n} possible match{'es' if n != 1 else ''}. Pick one and press Attach, or double-click it.")
+    # ---- preview
+    def _load_preview(self, path):
+        self._page=0; self._pages=1
+        self._render_page(count=True)
+    def show_page(self, step):
+        if self.cur and 0 <= self._page+step < self._pages: self._page+=step; self._render_page()
+    def _render_page(self, count=False):
+        """Build the preview picture on a worker thread (opening or drawing a PDF page can take a while) and
+        apply it on the Tk thread, only if it is still for the file and page on screen."""
+        p=self.cur; page=self._page; self._flip+=1; key=(self._read_gen, self._flip)
+        if self._preview_job is not None:
+            try: self.after_cancel(self._preview_job)
+            except Exception: pass
+            self._preview_job=None
+        self._preview_img=None; self._preview_msg='Loading the preview…'; self._update_page_controls(); self._draw_preview()
+        box={}
+        def work():
+            img=None; msg=''; pages=None
+            try:
+                if p.lower().endswith('.pdf'):
+                    if count: pages=max(1, pdf_page_count(p))
+                    img=pdf_preview_image(p, page)
+                    if img is None: msg=('No picture of this PDF can be shown here. The text read from it is on the right, and '
+                                         '"Open in default viewer" shows the page. (Installing pypdfium2 shows PDF pages here.)')
+                    else: msg=pdf_preview_note(p, page)   # shown above the picture when the page is several tiles
+                else:
+                    from PIL import Image, ImageOps
+                    img=ImageOps.exif_transpose(Image.open(p)); img.load()
+            except ImportError: msg='Photo previews need Pillow:  pip install pillow'
+            except Exception: img=None; msg="This file can't be previewed here. Try \"Open in default viewer\"."
+            box['result']=(img, msg, pages)
+        threading.Thread(target=work, daemon=True).start()
+        self._preview_job=self.after(50, self._poll_preview, key, box)
+    def _poll_preview(self, key, box):
+        self._preview_job=None
+        try:
+            if not self.winfo_exists(): return
+        except Exception: return
+        if key != (self._read_gen, self._flip): return     # another file or page was picked since: drop it
+        if 'result' not in box: self._preview_job=self.after(50, self._poll_preview, key, box); return
+        img, msg, pages = box['result']
+        if pages is not None: self._pages=pages
+        self._preview_img=img; self._preview_msg=msg
+        self._update_page_controls(); self._draw_preview()
+    def _update_page_controls(self):
+        self.page_var.set(f'Page {self._page+1} of {self._pages}' if self._pages > 1 else '')
+        for b, ok in ((self.prev_btn, self._page > 0), (self.next_btn, self._page < self._pages-1)):
+            try: b.state(['!disabled'] if ok else ['disabled'])
+            except Exception: pass
+    def _draw_preview(self, e=None):
+        """The picture fitted to the canvas width. With a picture, _preview_msg is an optional note drawn above it;
+        without one, it is the message shown instead."""
+        c=self.canvas; c.delete('all'); w=max(c.winfo_width(), 60); h=max(c.winfo_height(), 60)
+        img=self._preview_img
+        if img is not None:
+            try:
+                from PIL import ImageTk
+                top=2
+                if self._preview_msg:
+                    note=c.create_text(8, 6, anchor='nw', text=self._preview_msg, width=w-16, fill='#7a4b00')
+                    top=(c.bbox(note) or (0, 0, 0, 20))[3] + 6
+                size=(max(1, w-4), max(1, int(img.height*(w-4)/max(1, img.width))))
+                self._photo=ImageTk.PhotoImage(img.convert('RGB').resize(size), master=c)
+                c.create_image(2, top, anchor='nw', image=self._photo); c.configure(scrollregion=(0, 0, w, top+size[1]+4)); return
+            except Exception:
+                c.delete('all'); self._preview_img=None
+                self._preview_msg="This file can't be previewed here. Try \"Open in default viewer\"."
+        self._photo=None
+        c.create_text(10, 10, anchor='nw', text=self._preview_msg, width=w-20, fill='#555'); c.configure(scrollregion=(0, 0, w, h))
+    def open_viewer(self):
+        if self.cur: open_path(self.cur)
+    # ---- the two actions
+    def _ready_file(self):
+        if not self.cur or not os.path.exists(self.cur):
+            messagebox.showinfo('Match a receipt', 'Pick a file in the inbox list first.', parent=self); return None
+        return self.cur
+    def attach_to_selected(self):
+        if self._busy: return
+        p=self._ready_file()
+        if not p: return
+        sel=[i for i in self.tree.selection() if i.startswith('E')]
+        if not sel:
+            messagebox.showinfo('Match a receipt', 'Pick an expense in the list first, or start a new one from this receipt.', parent=self); return
+        dlg=ExpenseDialog(self, int(sel[0][1:]))
+        dlg.attach(self.doc_kind.get(), path=p)
+        if self._text: dlg.set_field('ocr_text', self._text)
+        self._edit_then_next(dlg, p)
+    def new_from_receipt(self):
+        if self._busy: return
+        p=self._ready_file()
+        if not p: return
+        picked_date, picked_amount = self.pick_date.get(), self.pick_amount.get()  # chosen here BEFORE the click
+        dlg=ExpenseDialog(self, default_user_id=self._user_id())
+        dlg.attach(self.doc_kind.get(), path=p)
+        if picked_date: dlg.set_field('transaction_date', picked_date)
+        if picked_amount: dlg.set_field('amount', picked_amount)
+        if self._text: dlg.set_field('ocr_text', self._text)
+        self._edit_then_next(dlg, p)
+    def _edit_then_next(self, dlg, p):
+        """Wait for the expense editor to close, then move on to the next inbox file. An attached file has left
+        the inbox; a discarded one is back and the next file after it is picked."""
+        old=self.files.index(p) if p in self.files else 0
+        self.wait_window(dlg)
+        try:
+            if not self.winfo_exists(): return
+        except Exception: return
+        self.load_inbox()
+        if not self.files: self._idle_message(); return
+        i=min(self.files.index(p)+1 if p in self.files else old, len(self.files)-1)
+        if self.files[i] == self.cur: self.inbox_list.selection_set(i); return
+        self.pick_index(i)
+    def destroy(self):
+        self._read_gen+=1   # any read or preview still running lands nowhere
+        for attr in ('_poll_job', '_preview_job'):
+            job=getattr(self, attr, None)
+            if job is not None:
+                try: self.after_cancel(job)
+                except Exception: pass
+                setattr(self, attr, None)
+        super().destroy()
+
 class ImportRowDialog(tk.Toplevel):
     """Review ONE imported row: pick which staged expense it is, then choose a side for EVERY field that
     differs — one row per field, in a plain comparison table. Nothing is forced: the card-fed fields just
@@ -3028,17 +3563,27 @@ class ConcurImportDialog(tk.Toplevel):
                           f"Your saved templates will fill in blank fields on {n} row{'' if n==1 else 's'}: "
                           + ', '.join(f'"{k}"' + (f' ({c} rows)' if c>1 else '') for k,c in used.items())
                           + ". They never change anything Concur or you already filled in.")
+        self._merge_note()  # retagging rows can change whether the report is renamed
     def _merge_target(self):
         """The existing report this import should join, or None when it should find/create one by name."""
         return self.merge_labels.get(self.merge_choice.get())
+    def _lands(self, rid):
+        """Whether any row will end up in report `rid` (None: one not made yet): a new expense, or an update to
+        one with no report or already in that one. Updated expenses never move out of their report."""
+        return any(p['action']=='new' or (p['action']=='merge' and p['candidates'][p['cand_index']][0]['report_id'] in (None,rid))
+                   for p in self.plans)
     def _merge_note(self):
         """Say in one sentence what the two report controls are about to do — a rename is destructive enough
         that it must never be a surprise discovered after Apply."""
         rid=self._merge_target(); name=self.report_name.get().strip()
+        if all(p['action']=='skip' for p in self.plans):
+            self.merge_note.set('Every row is ignored, so no report changes.'); return
         if rid is None:
             self.merge_note.set('' if name else 'These expenses will not go into any report.'); return
         cur=q(S.scalar('SELECT name FROM reports WHERE id=?',(rid,)))
-        if name and self.rename_var.get() and name!=cur:
+        if name and self.rename_var.get() and name!=cur and not self._lands(rid):
+            self.merge_note.set(f'"{cur}" keeps its name: every expense being updated sits in another report.')
+        elif name and self.rename_var.get() and name!=cur:
             note=f'Joining "{cur}" — and renaming it to "{name}", since Concur\'s name is the real one.'
             # Report names are not unique, so a rename CAN leave two reports called the same thing. Say so
             # rather than quietly making a pair he then has to tell apart in every picker.
@@ -3061,21 +3606,22 @@ class ConcurImportDialog(tk.Toplevel):
         ImportRowDialog(self, sel[0], on_done=self.refresh)
     def apply(self):
         name=self.report_name.get().strip(); rid=self._merge_target(); renamed=None; skipped_report=None
+        # Ignoring every row changes nothing, the report's name included.
+        if all(p['action']=='skip' for p in self.plans): rid=None; name=''
         if rid is not None:
             # Merging into a report already here. Concur's name is canonical, so it wins over whatever he
             # called it before the report existed in Concur — unless he unticks the rename box.
             was=q(S.scalar('SELECT name FROM reports WHERE id=?',(rid,)))
-            if name and self.rename_var.get() and name!=was:
+            # Renamed only if an expense ends up in it; otherwise Concur's name belongs to some other report.
+            if name and self.rename_var.get() and name!=was and self._lands(rid):
                 S.execute('UPDATE reports SET name=? WHERE id=?',(name,rid)); renamed=(was,name)
             else: name=was
         elif name:
             got=S.row('SELECT id FROM reports WHERE user_id=? AND name=?',(self.user_id,name))
             # A new report is made only if something will land in it: a new expense, or an update to one not
             # in a report yet. Updated expenses never move out of their report, so otherwise it stays empty.
-            lands=any(p['action']=='new' or (p['action']=='merge' and p['candidates'][p['cand_index']][0]['report_id'] is None)
-                      for p in self.plans)
             if got: rid=got['id']
-            elif lands: rid=S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
+            elif self._lands(None): rid=S.execute('INSERT INTO reports(user_id,name,report_date) VALUES(?,?,?)',(self.user_id,name,today())).lastrowid
             else: skipped_report=name
         merged=new=skipped=codes=templated=0; flags=[]
         for p in self.plans:
@@ -3093,6 +3639,11 @@ class ConcurImportDialog(tk.Toplevel):
                     # Only a both-sides-filled row is the user's call; card-fed and blank rows follow the rule.
                     if why!='both' or p['choices'].get(f,default)=='concur': apply_field(vals, r, f)
                 for f,val in tfill.items(): vals.setdefault(f,val)
+                # Columns with no field here go into the notes, as for a new expense; a re-import adds no repeats.
+                # Matched as a whole block of lines, so a multi-line cell is recognised too, whatever its line endings.
+                nl=lambda s: s.replace('\r\n','\n').replace('\r','\n')
+                old=q(exp['loose_notes']); add=[f'{k}: {v}' for k,v in r['_extra'].items() if nl(f'\n{k}: {v}\n') not in nl(f'\n{old}\n')]
+                if add: vals['loose_notes']='\n'.join(([old] if old else [])+add)
                 if rid and exp['report_id'] is None: vals['report_id']=rid  # never move one already in a report
                 if vals:
                     S.execute('UPDATE expenses SET '+','.join(f'{f}=?' for f in vals)+' WHERE id=?', tuple(vals.values())+(exp['id'],))
@@ -3318,7 +3869,7 @@ class App(tk.Tk):
         hints={'Quick Add':'Log a new expense (Ctrl+N).',
                'New Report':'Create a new expense report (Ctrl+Shift+N).',
                'Edit':'Open the selected expense or report (F2, or double-click an expense).',
-               'Attach File':'Attach a receipt or invoice file to the selected expense.',
+               'Match':'Match a receipt from your inbox to an expense (Ctrl+M).',
                'Mark Filed':'Mark the selection Filed in Concur (hides it from the default view).',
                'Add to Report':'Put the selected expense(s) into a report. Tip: you can also drag rows onto a report.',
                'Open Receipt/Invoice':'Open the file attached to the selected expense.',
@@ -3327,7 +3878,7 @@ class App(tk.Tk):
                'Ask for Receipts':'Turn the ticked expenses (or a selected report) into a plain-text list you can paste into an email. With nothing selected it offers the ones marked NEEDED.',
                'More ▾':'Everything else: glossaries, copy helpers, folders, import/export, settings.'}
         toolbar=[('Quick Add',self.quick_add),('New Report',self.new_report),None,
-                 ('Edit',self.edit),('Attach File',self.attach_selected),('Mark Filed',self.mark_filed),None,
+                 ('Edit',self.edit),('Match',self.match_receipts),('Mark Filed',self.mark_filed),None,
                  ('Add to Report',self.assign_report),('Open Receipt/Invoice',self.open_doc),None,
                  ('Delete',self.delete),None,
                  ('Ask for Receipts',self.request_receipts),('Open Concur',lambda:open_concur(self.flash_status))]
@@ -3454,6 +4005,8 @@ class App(tk.Tk):
         m.add_command(label='Select the receipts I am owed', command=self.select_needed_receipts)
         m.add_command(label='Ask for Receipts…', command=self.request_receipts)
         m.add_separator()
+        # Attach File lived on the toolbar until Match took its slot (2026-11-04); the toolbar holds at most 10 buttons.
+        m.add_command(label='Attach File', command=self.attach_selected)
         m.add_command(label='Open File Location', command=self.open_doc_location)
         m.add_command(label='Open Report Folder…', command=self.report_folder_action)
         m.add_command(label='Open Receipt Root', command=lambda:open_folder(get_local_setting('receipt_root'),'receipt root'))
@@ -3483,6 +4036,7 @@ class App(tk.Tk):
                 fn()
             return run
         self.bind_all('<Control-n>', h(self.quick_add)); self.bind_all('<Control-N>', h(self.new_report))
+        self.bind_all('<Control-m>', h(self.match_receipts))
         self.bind_all('<F2>', h(self.edit)); self.bind_all('<F5>', h(self.refresh))
         self.bind_all('<Control-d>', h(self.copy_expense, tree_only=True))
         self.bind_all('<Delete>', h(self.delete, tree_only=True))
@@ -3492,7 +4046,19 @@ class App(tk.Tk):
     def flash_status(self, msg, ms=4000):
         """Transient feedback in the footer (e.g. after a clipboard copy) — visible but never modal."""
         self.status_msg.set(msg)
-        self.after(ms, lambda: self.status_msg.set('') if self.status_msg.get()==msg else None)
+        self._cancel_flash()
+        self._flash_job=self.after(ms, self._clear_flash, msg)
+    def _clear_flash(self, msg):
+        self._flash_job=None
+        if self.status_msg.get()==msg: self.status_msg.set('')
+    def _cancel_flash(self):
+        if getattr(self, '_flash_job', None):
+            try: self.after_cancel(self._flash_job)
+            except Exception: pass
+            self._flash_job=None
+    def destroy(self):
+        self._cancel_flash()  # a pending 4s clear must not outlive the window (Tk logs "invalid command name")
+        super().destroy()
     def current_user_id(self): return self.user_map.get(self.user.get())
     def refresh_users(self):
         self.user_map={r['name']:r['id'] for r in S.rows('SELECT * FROM users ORDER BY name')}; self.user_cb['values']=list(self.user_map)
@@ -3678,6 +4244,13 @@ class App(tk.Tk):
     def selected(self):
         iid=self.tree.focus(); return (iid[0], int(iid[1:])) if iid else (None,None)
     def quick_add(self): ExpenseDialog(self, default_user_id=self.current_user_id())
+    def match_receipts(self):
+        """Open the receipt match window, or bring the open one forward (one at a time)."""
+        w=getattr(self, '_match_win', None)
+        try:
+            if w is not None and w.winfo_exists(): w.deiconify(); w.lift(); w.focus_set(); return w
+        except Exception: pass
+        self._match_win=ReceiptMatchDialog(self); return self._match_win
     def new_report(self): ReportDialog(self, default_user_id=self.current_user_id())
     def on_double(self, e):
         # Double-click opens whatever you clicked: an expense, or a report's header fields — the ones Concur
