@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.11.04.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.11.04.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -341,7 +341,9 @@ def pdf_preview_image(path, index=0):
     pypdfium2's rendering is the real page. Without it, an embedded picture stands in for the page only when the
     page has no text layer (a scan): an emailed receipt's embedded pictures are its logo, not the page. Several
     pictures -> the largest, which on a scan is the page itself."""
-    try: return pdf_render_page(path, index)
+    try:
+        img = pdf_render_page(path, index); img.info['cb_rendered'] = True   # the whole page: no tile note needed
+        return img
     except Exception: pass
     try:
         if (_pdf_reader(path).pages[index].extract_text() or '').strip(): return None
@@ -351,11 +353,8 @@ def pdf_preview_image(path, index=0):
 TILE_MIN_SHARE = 0.10   # a picture under 10% of the largest one's area is a logo or stamp, not part of the page
 def pdf_preview_note(path, index=0):
     """When a scan's page is stored as several real pictures (tiles), the preview shows only the largest; this
-    says so. '' when pypdfium2 draws the whole page, or there is one picture plus small logos."""
-    try:
-        import pypdfium2   # noqa: F401  (with it, the preview is the whole rendered page)
-        return ''
-    except Exception: pass
+    says so. '' when there is one picture plus small logos. The caller skips it when pypdfium2 actually rendered the
+    page (pdf_preview_image marks that image), not merely when pypdfium2 is installed: a render can still fail."""
     imgs = pdf_embedded_images(path, index)
     if len(imgs) < 2: return ''
     areas = [im.width * im.height for im in imgs]; big = max(areas)
@@ -1072,7 +1071,30 @@ class Store:
         for code,name,notes in ORACLE_SEED:
             self.execute('INSERT OR IGNORE INTO oracle_codes(code,name,notes) VALUES(?,?,?)', (code,name,notes))
         pass  # legacy private-build data migrations removed in the public build
+        self.heal_report_owners()
         self.seed_org_settings()
+    def assign_to_report(self, eid, rid):
+        """Put an expense in a report (Add to report, drag onto a report). It takes the report's user with it, so
+        an assignment can never leave one person's expense inside another person's report. None takes it out of its
+        report. A report that no longer exists changes nothing (returns False); one with no owner takes this one's."""
+        if rid is None:
+            self.execute('UPDATE expenses SET report_id=NULL WHERE id=?', (eid,)); return True
+        rep = self.row('SELECT id, user_id FROM reports WHERE id=?', (rid,))
+        if not rep: return False
+        if rep['user_id'] is None:
+            self.execute('UPDATE reports SET user_id=(SELECT user_id FROM expenses WHERE id=?) WHERE id=?', (eid, rid))
+        self.execute('UPDATE expenses SET report_id=?, user_id=(SELECT user_id FROM reports WHERE id=?) WHERE id=?', (rid, rid, eid))
+        return True
+    def heal_report_owners(self):
+        """An expense inside a report belongs to that report's user. Older builds could split them (changing a
+        report's user in its window left its expenses behind), which mis-counted them, filed their receipts under
+        the wrong person and dropped them from the report on Save. Repaired at every start; a no-op once clean.
+        A report with no owner recorded first takes the owner of its earliest expense, so it can be healed too."""
+        self.execute("UPDATE reports SET user_id=(SELECT e.user_id FROM expenses e WHERE e.report_id=reports.id ORDER BY e.id LIMIT 1) "
+                     "WHERE user_id IS NULL AND EXISTS(SELECT 1 FROM expenses e WHERE e.report_id=reports.id)")
+        self.execute("UPDATE expenses SET user_id=(SELECT r.user_id FROM reports r WHERE r.id=expenses.report_id) "
+                     "WHERE report_id IS NOT NULL AND EXISTS(SELECT 1 FROM reports r WHERE r.id=expenses.report_id "
+                     "AND r.user_id IS NOT NULL AND r.user_id<>expenses.user_id)")
     def seed_org_settings(self):
         """The organisation's corporate-card label and default Expense Group ID live in the settings table (Settings
         window), so they ride with the database instead of the build. Seeded once from this DB's OWN column
@@ -1993,14 +2015,14 @@ class ExpenseDialog(tk.Toplevel):
                              'it does not wipe fields that are already filled in.')
         ttk.Button(tpl_row, text='Apply', width=8, command=self.apply_template).grid(row=0,column=1,padx=(4,0))
         add('Apply template', tpl_row)
-        add('User', ttk.Combobox(frm, textvariable=self.user_var, values=list(self.user_map), state='readonly'))
+        user_cb=ttk.Combobox(frm, textvariable=self.user_var, values=list(self.user_map), state='readonly')
+        user_cb.bind('<<ComboboxSelected>>', self._user_changed)
+        add('User', user_cb)
         # Assign the expense to one of this user's reports right here (no need for the separate Assign-to-Report step).
         # The dropdown lists only reports you can still add to; filed ones stay reachable from the main window's
         # Add to report… (2026-10-12). The one this expense already sits in is listed even when filed, so opening
         # it never silently reads "(No report)". report_map keeps every report so a label always maps back.
-        self.report_map={report_choice_label(r):r['id'] for r in
-                         S.rows("SELECT id,name,status FROM reports WHERE user_id=? "
-                                "ORDER BY (status='Filed'), created_at DESC",(self.user_map.get(user_name),))}
+        self._build_report_map(self._owner_for(data.get('report_id')), data.get('report_id'))
         cur_rep=next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT)
         self.report_var=tk.StringVar(value=cur_rep)
         self.report_cb=ttk.Combobox(frm, textvariable=self.report_var, state='readonly')
@@ -2060,6 +2082,34 @@ class ExpenseDialog(tk.Toplevel):
         out={k:(v.get('1.0','end') if isinstance(v, tk.Text) else v.get()) for k,v in self.vars.items()}
         out['_user']=self.user_var.get(); out['_report']=self.report_var.get()
         return out
+    def _build_report_map(self, uid, rid=None):
+        """This user's reports, rebuilt from scratch each time (opening, paging, switching User), so one expense's
+        choices never carry over to another's. The expense's own report is kept only when this user owns it: an
+        expense in a report belongs to that report's user (heal_report_owners), as Move to User already enforces."""
+        self.report_map={report_choice_label(r):r['id'] for r in
+                         S.rows("SELECT id,name,status FROM reports WHERE user_id=? "
+                                "ORDER BY (status='Filed'), created_at DESC",(uid,))}
+        if rid and S.scalar('SELECT user_id FROM reports WHERE id=?', (rid,)) == uid: self._keep_own_report(rid)
+    def _owner_for(self, rid):
+        """The user this expense is shown under: the owner of the report it sits in, when it sits in one. An older
+        split (expense under one person, report under another) then shows its report and heals on Save."""
+        owner=S.scalar('SELECT user_id FROM reports WHERE id=?', (rid,)) if rid else None
+        name=next((n for n,i in self.user_map.items() if i==owner), None)
+        if name: self.user_var.set(name)
+        return self.user_map.get(self.user_var.get())
+    def _user_changed(self, e=None):
+        """Switching User keeps the report only if the new user owns it; otherwise it reads (No report), so Save
+        can never put one person's expense inside another person's report."""
+        rid=self.report_map.get(self.report_var.get())
+        self._build_report_map(self.user_map.get(self.user_var.get()), rid)
+        self.report_var.set(next((n for n,i in self.report_map.items() if i==rid), NO_REPORT))
+        self._report_choices(rid)
+    def _keep_own_report(self, rid):
+        """The report this expense already sits in is always in the list, even when another user owns it.
+        Otherwise the dropdown read "(No report)" and Save wrote that back, silently taking it out of the report."""
+        if rid and rid not in self.report_map.values():
+            r=S.row('SELECT id,name,status FROM reports WHERE id=?', (rid,))
+            if r: self.report_map[report_choice_label(r)]=r['id']
     def _report_choices(self, current_id=None):
         """Open reports, plus the expense's own report if that one is already filed."""
         self.report_cb['values']=[NO_REPORT]+[n for n,i in self.report_map.items()
@@ -2091,6 +2141,7 @@ class ExpenseDialog(tk.Toplevel):
             elif isinstance(var, tk.IntVar): var.set(int(val or 0))
             else: var.set(field_text(name, val))
         self.user_var.set(next((n for n,i in self.user_map.items() if i==data.get('user_id')), self.user_var.get()))
+        self._build_report_map(self._owner_for(data.get('report_id')), data.get('report_id'))
         self.report_var.set(next((n for n,i in self.report_map.items() if i==data.get('report_id')), NO_REPORT))
         self._report_choices(data.get('report_id'))
         self.tpl_var.set(NO_TEMPLATE)
@@ -2441,7 +2492,11 @@ class ReportDialog(tk.Toplevel):
         if not self.vars['name'].get().strip(): messagebox.showwarning('Required','Report name is required.', parent=self); return
         vals={k:v.get() for k,v in self.vars.items()}; vals['user_id']=self.user_map[self.user_var.get()]
         S.add_oracle(vals.get('oracle_alias',''))  # grow the oracle list if this is a new code
-        if self.rep_id: S.execute('UPDATE reports SET '+', '.join(f'{k}=?' for k in vals)+' WHERE id=?', tuple(vals.values())+(self.rep_id,))
+        if self.rep_id:
+            S.execute('UPDATE reports SET '+', '.join(f'{k}=?' for k in vals)+' WHERE id=?', tuple(vals.values())+(self.rep_id,))
+            # A report's expenses belong to its owner (as Move to User does): changing the user here used to move
+            # the report alone, leaving its expenses under the old person, where their own window then lost the report.
+            S.execute('UPDATE expenses SET user_id=? WHERE report_id=?', (vals['user_id'], self.rep_id))
         else: S.execute('INSERT INTO reports('+','.join(vals)+') VALUES('+','.join('?'*len(vals))+')', tuple(vals.values()))
         self.master.refresh(); self.destroy()
 
@@ -2709,7 +2764,7 @@ class AssignReportDialog(tk.Toplevel):
         rid=self.entries[sel[0]]
         if rid is self.HEADING:
             messagebox.showinfo('Assign to Report','That line is a heading — pick one of the reports under it.',parent=self); return
-        for eid in self.exp_ids: S.execute('UPDATE expenses SET report_id=? WHERE id=?',(rid,eid))
+        for eid in self.exp_ids: S.assign_to_report(eid, rid)
         if rid:
             try: collect_report_receipts(rid)  # keep the report's folder of receipts current
             except Exception: pass
@@ -3227,7 +3282,7 @@ class ReceiptMatchDialog(tk.Toplevel):
                     img=pdf_preview_image(p, page)
                     if img is None: msg=('No picture of this PDF can be shown here. The text read from it is on the right, and '
                                          '"Open in default viewer" shows the page. (Installing pypdfium2 shows PDF pages here.)')
-                    else: msg=pdf_preview_note(p, page)   # shown above the picture when the page is several tiles
+                    elif not img.info.get('cb_rendered'): msg=pdf_preview_note(p, page)   # above the picture when the page is several tiles
                 else:
                     from PIL import Image, ImageOps
                     img=ImageOps.exif_transpose(Image.open(p)); img.load()
@@ -4337,7 +4392,7 @@ class App(tk.Tk):
         if not ids: messagebox.showinfo('Assign to Report','Select one or more expenses first.'); return
         AssignReportDialog(self, ids, self.current_user_id(), self.refresh)
     def _assign_expenses_to_report(self, ids, rid):
-        for eid in ids: S.execute('UPDATE expenses SET report_id=? WHERE id=?',(rid,eid))
+        for eid in ids: S.assign_to_report(eid, rid)
         if rid: self.gather_report_files(rid, quiet=True)  # keep the report's own folder of receipts current
         self.refresh()
     def gather_report_files(self, rid, quiet=False, reveal=False):

@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.11.04.1
+Concur Buddy — version 2026.11.04.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,16 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.11.04.2 — FIXES expenses ending up under the wrong person. Changing a report's user in its own window used
+to move the report but leave its expenses with the previous person: they still showed inside the report, but
+counted toward the wrong person, filed their receipts in the wrong person's folder, and dropped out of the
+report the next time one was opened and saved. Now an expense in a report always belongs to that report's
+user. **When this version first starts, it fixes any expense already caught this way: each one is given to the
+user who owns its report.** Switching an expense's user, paging through expenses, and Add to report keep the
+two together too. An expense that already fell out of its report can't be put back automatically, since
+nothing records which report it was in; use Add to report for it. Also: when a scanned PDF page is stored as
+several pictures, the Match window now says only the largest is shown, even with pypdfium2 installed.
 
 2026.11.04.1 — NEW: match receipts to expenses. Press **Match** on the toolbar (or Ctrl+M) when receipts are
 sitting in your inbox folder. Pick one and you see it, the app reads it, and it lists the open expenses whose
