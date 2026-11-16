@@ -201,7 +201,7 @@ can be filled in later. Useful fields:
   [Expense codes](#expense-codes)).
 - **Business purpose, business name, city/state/country** — Concur fields, kept in Concur Buddy so you don't have
   to work them out again at filing time.
-- **Payment type** — e.g. corporate card vs. personal/reimbursable.
+- **Payment type** — e.g. corporate card vs. Out of Pocket (paid yourself).
 - Checkboxes: *Is this a vendor invoice?*, *Personal expense / do not reimburse*, *Missing receipt
   acknowledgement attached*.
 - Free-text **Comment**, **Loose notes**, **Attendees**, and an **OCR / extracted text** box.
@@ -539,7 +539,7 @@ Report headers have the same picker, plus the rest of the fields Concur demands 
 control on the left.)
 
 ### Money you paid yourself (the 30-day clock)
-Anything with a payment type of **Personal / reimbursable** is money you are owed, and it has to be claimed
+Anything with a payment type of **Out of Pocket** (the name a Concur export uses) is money you are owed, and it has to be claimed
 back within 30 days. The reimbursement run is month-end, so in the **last 7 calendar days of a month** every
 unfiled personal expense turns **red** in the list and the home counter adds *"N to claim back before the
 month ends"*. Outside that window it stays quiet — a flag that is always on is not a flag. Ticking *Personal

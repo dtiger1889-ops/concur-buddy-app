@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.11.04.3
+Concur Buddy — version 2026.11.16.1
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -11,12 +11,23 @@ day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this ma
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
 
+2026.11.16.1 — "Out of Pocket" is now the name for money you paid yourself, the same words a Concur export
+uses (it used to say "Personal / reimbursable"). Before, an imported personal expense came in as "Out of
+Pocket", which wasn't one of the choices here, so it never turned red when it was time to claim it back. Now
+it does. **When this version first starts, every expense, card and template that said "Personal /
+reimbursable" switches to "Out of Pocket" by itself.** Also new: when importing a Concur report, "Update
+existing" now lists every expense that no Concur export has matched yet, not only ones with the same amount,
+so you can match a row by hand when the amount changed (a tip, a refund). Two rows can't both update the same
+expense. And in the Match window, click any column heading in the Possible matches list to sort by it: once
+to sort, again to reverse, a third time to go back to best match first.
+
 2026.11.04.3 — The Match window is easier to read and makes fewer wrong guesses. Drag the dividers between its
 panes to make any box bigger. The amounts and dates found on a receipt sit in their own labeled box (largest
 amount first, dates spelled out), and the ones the picked expense matches turn green. The match list shows an
 Amount fit, Date fit and Name on receipt column, with a line under it saying why the expense was suggested. A
-close amount (a tip or rounding), or an exact amount on a different date, is now suggested only when the
-expense's vendor name appears on the receipt, so unrelated rides and purchases no longer show up. New:
+close amount (a tip or rounding), or an exact amount more than three days from the receipt's dates, is now
+suggested only when the expense's vendor name appears on the receipt, so far fewer unrelated rides and
+purchases show up. New:
 Optional tools ▾ lists the add-ons that let the window show and read more kinds of receipts, with a ✓ on the
 installed ones; each explains itself and warns before opening its outside website.
 

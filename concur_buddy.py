@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.11.04.3"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.11.16.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -18,7 +18,20 @@ CONCUR_URL = "https://us2.concursolutions.com/"
 STATUSES = ["Draft", "Awaiting invoice", "Awaiting receipt", "Receipt received", "Ready to file", "Filed"]
 # Old status spellings -> new (applied as a one-time data migration on existing DBs).
 STATUS_MIGRATE = {"Expected": "Awaiting receipt", "Receipt Received": "Receipt received", "Ready": "Ready to file"}
-PAYMENT_TYPES = ["Corporate Card", "Personal / reimbursable", "Other"]
+PAYMENT_TYPES = ["Corporate Card", "Out of Pocket", "Other"]
+OLD_PERSONAL_PAYMENT = "Personal / reimbursable"  # pre-2026-11-16 name; the DB is moved to Concur's "Out of Pocket" on open
+def normalize_payment(v):
+    """The old personal payment name (any case or padding) becomes "Out of Pocket"; anything else is kept as is."""
+    return PAYMENT_TYPES[1] if isinstance(v, str) and v.strip().casefold() == OLD_PERSONAL_PAYMENT.casefold() else v
+def normalize_template_fields(body):
+    """A template's saved fields (JSON text) with its payment type renamed; only that field, never other text."""
+    try: d = json.loads(body) if isinstance(body, str) else body
+    except Exception: return body
+    if not isinstance(d, dict) or 'payment_type' not in d: return body
+    new = normalize_payment(d['payment_type'])
+    if new == d['payment_type']: return body
+    d = dict(d); d['payment_type'] = new
+    return json.dumps(d) if isinstance(body, str) else d
 DEFAULT_CARD_LABEL = PAYMENT_TYPES[0]  # fallback only; the live label is the database's 'corporate_card_label' setting
 # Org wording kept in the DB settings table: (setting key, table, column whose schema DEFAULT seeds it on first run).
 ORG_SETTING_COLUMNS = [('corporate_card_label', 'expenses', 'payment_type'), ('expense_group_id', 'reports', 'expense_group_id')]
@@ -199,7 +212,7 @@ def reimbursement_due(e, d=None):
     the month is young. And the month-end reimbursement RUN, which is when a claim has to be in. Warning
     window for both is REIMBURSE_ALERT_DAYS."""
     if q(e['status']) == 'Filed': return False
-    if q(e['payment_type']).strip() != PAYMENT_TYPES[1]: return False  # 'Personal / reimbursable'
+    if q(e['payment_type']).strip() != PAYMENT_TYPES[1]: return False  # 'Out of Pocket'
     if 'personal_no_reimburse' in e.keys() and e['personal_no_reimburse']: return False  # not claiming this one
     if days_since(e['transaction_date'], d) >= REIMBURSE_DEADLINE_DAYS - REIMBURSE_ALERT_DAYS: return True
     return days_to_month_end(d) <= REIMBURSE_ALERT_DAYS
@@ -1033,6 +1046,18 @@ class Store:
         if 'amount_after_fee' not in cols: self.execute("ALTER TABLE expenses ADD COLUMN amount_after_fee REAL DEFAULT 0")
         # An expense can be coded to an org alias on its own — most spend never becomes a report.
         if 'oracle_alias' not in cols: self.execute("ALTER TABLE expenses ADD COLUMN oracle_alias TEXT DEFAULT ''")
+        # Set when a Concur export import creates or updates the expense. "Update existing" offers every
+        # expense still without it, so one staged under a different amount can still be linked by hand.
+        if 'export_matched_at' not in cols: self.execute("ALTER TABLE expenses ADD COLUMN export_matched_at TEXT DEFAULT ''")
+        # The personal payment type is named the way a Concur export names it, so an import and a hand entry agree.
+        for tbl in ('expenses', 'cards'):   # a very old database may not have the column yet
+            if 'payment_type' in [r['name'] for r in self.rows(f"PRAGMA table_info({tbl})")]:
+                for r in self.rows(f"SELECT DISTINCT payment_type v FROM {tbl}"):   # a handful of values; Python decides
+                    if normalize_payment(r['v']) != r['v']:
+                        self.execute(f"UPDATE {tbl} SET payment_type=? WHERE payment_type=?", (PAYMENT_TYPES[1], r['v']))
+        for r in self.rows("SELECT id,fields FROM templates"):
+            new = normalize_template_fields(r['fields'])
+            if new != r['fields']: self.execute("UPDATE templates SET fields=? WHERE id=?", (new, r['id']))
         ucols=[r['name'] for r in self.rows("PRAGMA table_info(users)")]
         if 'receipt_root' not in ucols: self.execute("ALTER TABLE users ADD COLUMN receipt_root TEXT DEFAULT ''")
         # Clean any money values stored as text (e.g. '1,405.00', '$59.69') from older builds into real numbers.
@@ -1168,7 +1193,7 @@ class Store:
         name=q(name).strip(); vendor=q(vendor).strip()
         if not name or not vendor: return False
         if not isinstance(fields, (str, dict)): fields={}
-        body=fields if isinstance(fields, str) else json.dumps(fields)
+        body=normalize_template_fields(fields if isinstance(fields, str) else json.dumps(fields))  # an old export's payment name
         existing=self.row('SELECT id,is_default FROM templates WHERE name=?', (name,))
         if existing:
             flag=existing['is_default'] if is_default is None else is_default
@@ -1473,6 +1498,17 @@ def receipt_match_marks(text, amounts, dates, e):
     gap = min((date_gap(d, _field(e, 'transaction_date')) for d in dates), default=999)
     dm = '—' if gap >= 999 else ('✓ same day' if gap == 0 else (f'✓ {_gap_words(gap)}' if gap <= RECEIPT_DATE_WINDOW else f'✗ {gap} days'))
     return am, dm, '✓' if vendor_on_receipt(_field(e, 'vendor'), text) else '—'
+def match_sort_keys(e, vals, amounts, dates):
+    """Sort keys for one Match-window row, per column: (missing, value). Missing values sort last both ways;
+    the fit columns sort best fit first. vals is the row as shown; amounts/dates are what the receipt shows."""
+    def text(s): s=q(s).strip(); return (s=='', s.casefold())
+    amt=round(float(_field(e, 'amount') or 0), 2)
+    exact, near = receipt_amount_fit(amt, amounts)
+    amt_fit = 0 if exact is not None else (1+abs(near-amt) if near is not None else None)
+    gap = min((date_gap(d, _field(e, 'transaction_date')) for d in dates), default=999)
+    return {'date': text(vals[0]), 'vendor': text(vals[1]), 'amount': (False, amt),
+            'amt_fit': (amt_fit is None, amt_fit or 0), 'date_fit': (gap >= 999, gap),
+            'vendor_fit': (False, 0 if vals[5] == '✓' else 1), 'report': text(vals[6])}
 def rank_receipt_matches(text, expenses, today=None):
     """Open expenses that fit a receipt, best first: [(expense, tier, why)], at most RECEIPT_MAX_SUGGESTIONS.
 
@@ -1545,6 +1581,13 @@ def propose_matches(rows, expenses):
         cands = [c for c in cands if c[0]['id'] == mine or c[0]['id'] not in taken]  # never offer another row's match
         out.append((cands, next((k for k, c in enumerate(cands) if c[0]['id'] == mine), None)))
     return out
+def plan_pool(plan):
+    """Everything an import row can update: its same-amount candidates first, then the expenses no export has
+    matched yet ('others'). `cand_index` indexes this list."""
+    return plan['candidates'] + plan.get('others', [])
+def plan_target(plan):
+    """The staged expense an import row will update."""
+    return plan_pool(plan)[plan['cand_index']][0]
 def merge_plan(row, exp):
     """What merging `row` into staged expense `exp` would do, as (card, conflicts, fills) — each a list of
     (field, staged_value, export_value):
@@ -3247,8 +3290,11 @@ class ReceiptMatchDialog(tk.Toplevel):
         cols=(('date','Date',84), ('vendor','Vendor',140), ('amount','Amount',64), ('amt_fit','Amount fit',84),
               ('date_fit','Date fit',96), ('vendor_fit','Name on receipt',100), ('report','Report',110))
         self.tree=ttk.Treeview(tf, columns=[c for c,_,_ in cols], show='headings', height=5, selectmode='browse')
+        self.msort_titles={c: title for c, title, _ in cols}; self.msort_col=self.msort_dir=None
+        self._rank_order=[]; self._sort_keys={}
         for c, title, w in cols:
-            self.tree.heading(c, text=title); self.tree.column(c, width=w, minwidth=40, stretch=True, anchor='e' if c=='amount' else 'w')
+            self.tree.heading(c, text=title, command=lambda c=c: self.sort_matches(c))
+            self.tree.column(c, width=w, minwidth=40, stretch=True, anchor='e' if c=='amount' else 'w')
         self.tree.grid(row=0, column=0, sticky='nsew')
         tsb=ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview); tsb.grid(row=0, column=1, sticky='ns')
         txb=ttk.Scrollbar(tf, orient='horizontal', command=self.tree.xview); txb.grid(row=1, column=0, sticky='ew')
@@ -3372,6 +3418,8 @@ class ReceiptMatchDialog(tk.Toplevel):
     def fill_matches(self):
         """Rank the open expenses against what was read; optionally list every other open expense below."""
         self.tree.delete(*self.tree.get_children()); self._why={}; self._rows={}; self.why_var.set('')
+        if self.tree.exists('sep'): self.tree.delete('sep')   # hidden (detached) while sorted, so not a child above
+        self._rank_order=[]; self._sort_keys={}
         if self.cur is None or self._busy: self._mark_found(); return
         everyone=bool(self.all_users.get())
         pool=receipt_match_pool(self._user_id(), everyone)
@@ -3381,21 +3429,54 @@ class ReceiptMatchDialog(tk.Toplevel):
             vendor=q(e['vendor']) + (f" ({q(e['user_name'])})" if everyone and q(e['user_name']) else '')
             am, dm, vm = receipt_match_marks(self._text, amounts, dates, e)
             return (q(e['transaction_date']), vendor, f"{float(e['amount'] or 0):,.2f}", am, dm, vm, q(e['report_name']))
+        def add(e):
+            iid=f"E{e['id']}"; vals=row(e); self.tree.insert('', 'end', iid=iid, values=vals)
+            self._rows[iid]=e; self._rank_order.append(iid)
+            self._sort_keys[iid]=match_sort_keys(e, vals, amounts, dates)
+            return iid
         shown=set()
         for e, tier, why in sugg:
-            iid=f"E{e['id']}"; self.tree.insert('', 'end', iid=iid, values=row(e)); shown.add(e['id'])
-            self._why[iid]=why; self._rows[iid]=e
+            self._why[add(e)]=why; shown.add(e['id'])
         if self.show_all.get():
             rest=[e for e in pool if e['id'] not in shown]
-            if rest: self.tree.insert('', 'end', iid='sep', values=('', '— every other open expense —', '', '', '', '', ''), tags=('sep',))
-            for e in rest:
-                iid=f"E{e['id']}"; self.tree.insert('', 'end', iid=iid, values=row(e)); self._rows[iid]=e
+            if rest:
+                self.tree.insert('', 'end', iid='sep', values=('', '— every other open expense —', '', '', '', '', ''), tags=('sep',))
+                self._rank_order.append('sep')
+            for e in rest: add(e)
+        self._order_matches()
         if sugg and sugg[0][1] == 1: self.tree.selection_set(f"E{sugg[0][0]['id']}")
         self._mark_found()
         if not money_values(self._text) and not text_dates(self._text): self.status_var.set(NOTHING_TO_MATCH)
         elif not sugg: self.status_var.set(NO_FIT)
         else:
             n=len(sugg); self.status_var.set(f"{n} possible match{'es' if n != 1 else ''}. Pick one and press Attach, or double-click it.")
+    # Same clicks as the main list: first click sorts the most useful way (newest / biggest first, A→Z, best
+    # fit first), the second reverses it, the third goes back to the ranked order with its divider.
+    MSORT_FIRST_DESC=('date','amount')
+    def sort_matches(self, col):
+        first='desc' if col in self.MSORT_FIRST_DESC else 'asc'
+        if col!=self.msort_col: self.msort_col,self.msort_dir=col,first
+        elif self.msort_dir==first: self.msort_dir={'asc':'desc','desc':'asc'}[first]
+        else: self.msort_col=self.msort_dir=None
+        for c,t in self.msort_titles.items():
+            arrow=(' ▼' if self.msort_dir=='desc' else ' ▲') if c==self.msort_col else ''
+            self.tree.heading(c, text=t+arrow)
+        self._order_matches()
+    def _order_matches(self):
+        """Put the rows in the chosen column order (blank values last either way), or back in ranked order.
+        A sorted list mixes suggestions and the rest, so the divider is hidden while sorted."""
+        ranked=[i for i in self._rank_order if self.tree.exists(i)]
+        col=self.msort_col
+        if col is None: order=ranked
+        else:
+            rows=[i for i in ranked if i!='sep']
+            rows.sort(key=lambda i: self._sort_keys[i][col][1], reverse=self.msort_dir=='desc')
+            rows.sort(key=lambda i: self._sort_keys[i][col][0])
+            order=rows
+            if self.tree.exists('sep'): self.tree.detach('sep')
+        for n, i in enumerate(order): self.tree.move(i, '', n)
+        sel=self.tree.selection()
+        if sel: self.tree.see(sel[0])
     # ---- preview
     def _load_preview(self, path):
         self._page=0; self._pages=1
@@ -3535,12 +3616,23 @@ class ImportRowDialog(tk.Toplevel):
         ttk.Label(head,text='   '.join(bits),font=self.bold,wraplength=560).pack(anchor='w')
         pick=ttk.Frame(self,padding=(10,6,10,0)); pick.pack(fill='x')
         ttk.Label(pick,text='Update which expense?',font=self.bold).pack(anchor='w')
-        self.lb=tk.Listbox(pick,height=4,exportselection=False); self.lb.pack(fill='x',pady=(2,0))
+        others=plan.get('others',[])
+        if others:
+            ttk.Label(pick,text=('Same-amount matches come first. After them is every expense of yours that no Concur '
+                                 'export has matched yet; updating one takes Concur\'s amount.'),
+                      foreground='#555',wraplength=560,justify='left').pack(anchor='w')
+        lbox=ttk.Frame(pick); lbox.pack(fill='x',pady=(2,0))
+        sb=ttk.Scrollbar(lbox,orient='vertical')
+        self.lb=tk.Listbox(lbox,height=8 if others else 4,exportselection=False,yscrollcommand=sb.set)
+        sb.config(command=self.lb.yview); sb.pack(side='right',fill='y'); self.lb.pack(side='left',fill='x',expand=True)
         self.lb.insert('end','None of these — add it as a new expense')
-        for e,gap,sim in plan['candidates']:
-            self.lb.insert('end', f"#{e['id']}   {q(e['transaction_date'])}   {q(e['vendor'])}   {money_part(e['amount'])}"
-                                  f"   ({gap} day{'' if gap==1 else 's'} apart, {int(sim*100)}% name match)")
-        self.lb.selection_set(0 if plan['action']!='merge' else 1+plan['cand_index'])
+        for n,(e,gap,sim) in enumerate(plan_pool(plan)):
+            apart=f"{gap} day{'' if gap==1 else 's'} apart" if gap<999 else 'no date'
+            tail=(f"   ({apart}, {int(sim*100)}% name match)" if n<len(plan['candidates'])
+                  else f"   (different amount, {apart})")
+            self.lb.insert('end', f"#{e['id']}   {q(e['transaction_date'])}   {q(e['vendor'])}   {money_part(e['amount'])}{tail}")
+        at=0 if plan['action']!='merge' else 1+plan['cand_index']
+        self.lb.selection_set(at); self.lb.see(at)
         self.lb.bind('<<ListboxSelect>>', lambda e: self.build_fields())
         self.fields=ttk.Frame(self,padding=(10,8)); self.fields.pack(fill='both',expand=True)
         bar=FlowBar(self,padding=8); bar.pack(side='bottom',fill='x')
@@ -3551,7 +3643,7 @@ class ImportRowDialog(tk.Toplevel):
         self.build_fields(); fit_to_screen(self, min_w=620, min_h=420)
     def _selected_candidate(self):
         sel=self.lb.curselection(); i=(sel[0] if sel else 0)-1
-        return i if 0<=i<len(self.plan['candidates']) else None
+        return i if 0<=i<len(plan_pool(self.plan)) else None
     def build_fields(self):
         for w in self.fields.winfo_children(): w.destroy()
         self.choice_vars={}
@@ -3559,7 +3651,7 @@ class ImportRowDialog(tk.Toplevel):
         if i is None:
             ttk.Label(self.fields,text='It will be added as a new expense, exactly as Concur has it.').grid(row=0,column=0,sticky='w')
             return
-        rows=plan_rows(self.row, self.plan['candidates'][i][0])
+        rows=plan_rows(self.row, plan_pool(self.plan)[i][0])
         if not rows:
             ttk.Label(self.fields,text='Both copies already agree, so updating changes no fields. It just links the two.').grid(row=0,column=0,sticky='w')
             return
@@ -3631,9 +3723,15 @@ class ConcurImportDialog(tk.Toplevel):
         if not rows: raise ValueError('no expense rows found in that file')
         self.unknown=unknown
         staged=S.rows('SELECT * FROM expenses WHERE user_id=? ORDER BY transaction_date DESC',(user_id,))
+        proposals=propose_matches(rows, staged)
         self.plans=[{'row':r,'candidates':cands,'cand_index':pick if pick is not None else (0 if cands else None),
                      'action':'new' if pick is None else 'merge','choices':{},'reviewed':False}
-                    for r,(cands,pick) in zip(rows, propose_matches(rows, staged))]
+                    for r,(cands,pick) in zip(rows, proposals)]
+        # Beyond the same-amount candidates, every expense no export has matched yet can be picked by hand
+        # (listed after them, closest date first). Without this, a charge staged at the wrong amount, or before
+        # a tip, could never be linked, and "Update existing" did nothing exactly when it was needed.
+        self.unmatched=[e for e in staged if not q(e['export_matched_at']).strip()]
+        self._rebuild_others()
         top=ttk.Frame(self,padding=(8,6)); top.pack(fill='x')
         ttk.Label(top,text=f"{len(rows)} expense{'' if len(rows)==1 else 's'} in {Path(path).name}, checked against the "
                            f"{len(staged)} this user already has in Concur Buddy").pack(anchor='w')
@@ -3652,7 +3750,7 @@ class ConcurImportDialog(tk.Toplevel):
         # When every matched expense that already sits in a report sits in the SAME one, this export is that
         # report coming back from Concur: preselect it, so the import joins it instead of making a second,
         # empty one (2026-10-12). The note under the controls says what Apply will do before anything is written.
-        homes={p['candidates'][p['cand_index']][0]['report_id'] for p in self.plans if p['action']=='merge'}-{None}
+        homes={plan_target(p)['report_id'] for p in self.plans if p['action']=='merge'}-{None}
         home=next((n for n,i in self.merge_labels.items() if i in homes), None) if len(homes)==1 else None
         self.merge_choice=tk.StringVar(value=home or NEW_REPORT)
         cb=ttk.Combobox(mergebox,textvariable=self.merge_choice,width=26,state='readonly',
@@ -3680,7 +3778,7 @@ class ConcurImportDialog(tk.Toplevel):
         bar=FlowBar(self,padding=(8,4)); bar.pack(fill='x')
         rowbox=ttk.LabelFrame(bar,text=' Selected row(s) ',padding=(6,2))
         for txt,cmd,tip in [('Review…',self.review,'Open the selected row to choose which of your expenses it updates, and to settle any field where the two copies differ. Double-clicking a row does the same.'),
-                            ('Update existing',lambda:self.set_action('merge'),'Use this when you already have this expense in Concur Buddy. Concur\'s details go into your copy, so you don\'t end up with two. Your receipt, notes and status stay. Does nothing to a row when none of your expenses has the same amount.'),
+                            ('Update existing',lambda:self.set_action('merge'),'Use this when you already have this expense in Concur Buddy. Concur\'s details go into your copy, so you don\'t end up with two. Your receipt, notes and status stay. When none of your expenses has the same amount, it opens a list of every expense no Concur export has matched yet, so you can pick the right one.'),
                             ('Add as new',lambda:self.set_action('new'),'You don\'t have this one in Concur Buddy yet: make a new expense from it. Use this when the suggested match is wrong.'),
                             ('Ignore',lambda:self.set_action('skip'),'Leave the selected row(s) out entirely — nothing created, nothing changed.')]:
             b=ttk.Button(rowbox,text=txt,command=cmd); b.pack(side='left',padx=2); Tooltip(b,tip)
@@ -3714,8 +3812,24 @@ class ConcurImportDialog(tk.Toplevel):
     def _template_fills(self, p):
         """The template fill for one plan as it stands now (an update fills only what the staged copy lacks)."""
         if p['action']=='skip': return None, {}
-        return template_fills(p['row'], p['candidates'][p['cand_index']][0] if p['action']=='merge' else None)
+        return template_fills(p['row'], plan_target(p) if p['action']=='merge' else None)
+    def _rebuild_others(self):
+        """Recompute every row's 'others' from the rows as they stand now: an expense another row is set to
+        update is left out (two rows must never update one expense), and one a row let go of comes back.
+        Each row keeps pointing at the same expense; only its position in the list may move."""
+        for p in self.plans:
+            tid=plan_target(p)['id'] if p['action']=='merge' else None
+            busy={plan_target(o)['id'] for o in self.plans if o is not p and o['action']=='merge'}
+            have={c[0]['id'] for c in p['candidates']}; r=p['row']
+            others=[(e,date_gap(r.get('transaction_date'),e['transaction_date']),vendor_similarity(r.get('vendor'),e['vendor']))
+                    for e in self.unmatched if e['id'] not in have and (e['id']==tid or e['id'] not in busy)]
+            others.sort(key=lambda t:(t[1],-t[2])); p['others']=others
+            if tid is not None: p['cand_index']=next(k for k,c in enumerate(plan_pool(p)) if c[0]['id']==tid)
+            # A row not updating anything keeps no pointer into a list that just moved: turning it back on
+            # starts from its own same-amount match, never from a stale position that now means another expense.
+            else: p['cand_index']=0 if p['candidates'] else None
     def refresh(self):
+        self._rebuild_others()
         self.tree.delete(*self.tree.get_children())
         used={}
         for i,p in enumerate(self.plans):
@@ -3726,7 +3840,7 @@ class ConcurImportDialog(tk.Toplevel):
             # as short sentences, not counters-and-jargon: "1 from card" told him nothing he could act on.
             plural=lambda n,one,many: f"{n} {one if n==1 else many}"
             if p['action']=='merge':
-                e=p['candidates'][p['cand_index']][0]
+                e=plan_target(p)
                 rows=plan_rows(r,e); undecided=sum(1 for f,_,_,_,why in rows if why=='both')
                 act=f"Update #{e['id']} {q(e['vendor'])}"
                 bits=[]
@@ -3742,7 +3856,8 @@ class ConcurImportDialog(tk.Toplevel):
                 tag='needs' if (undecided and not p.get('reviewed')) else 'ready'
             elif p['action']=='new':
                 act='Add as a new expense'; tag='new'
-                detail=('no expense in Concur Buddy has this amount' if not p['candidates']
+                detail=(('no expense in Concur Buddy has this amount'
+                         +(' — Update existing lets you pick one anyway' if p.get('others') else '')) if not p['candidates']
                         else plural(len(p['candidates']),'expense in Concur Buddy has','expenses in Concur Buddy have')+' this amount — use Review… to link one')
             else: act='Ignore — nothing happens'; detail='left out of this import'; tag='skip'
             if tfill:
@@ -3764,7 +3879,7 @@ class ConcurImportDialog(tk.Toplevel):
     def _lands(self, rid):
         """Whether any row will end up in report `rid` (None: one not made yet): a new expense, or an update to
         one with no report or already in that one. Updated expenses never move out of their report."""
-        return any(p['action']=='new' or (p['action']=='merge' and p['candidates'][p['cand_index']][0]['report_id'] in (None,rid))
+        return any(p['action']=='new' or (p['action']=='merge' and plan_target(p)['report_id'] in (None,rid))
                    for p in self.plans)
     def _merge_note(self):
         """Say in one sentence what the two report controls are about to do — a rename is destructive enough
@@ -3788,17 +3903,41 @@ class ConcurImportDialog(tk.Toplevel):
             self.merge_note.set(f'Joining "{cur}" — its name is kept.')
     def _sel(self): return [self.plans[int(i)] for i in self.tree.selection()]
     def set_action(self, action):
+        pick=[]  # rows with no same-amount match: there is no safe guess, so he picks the expense himself
         for p in self._sel():
-            if action=='merge' and not p['candidates']: continue  # nothing to merge into
+            if action=='merge' and not p['candidates']:
+                if p.get('others'): pick.append(p)  # Cancel in that window stops the run of windows
+                continue
             p['action']=action
             if action=='merge' and p['cand_index'] is None: p['cand_index']=0
             p['reviewed']=False  # retagging a row invalidates any earlier review of it
         self.refresh()
+        self._review_each(pick)
+    def _review_each(self, plans):
+        """Open Review… for each plan in turn; the next opens when the previous one closes."""
+        if not plans: return
+        def done():
+            self.refresh()
+            if self.winfo_exists(): self.after_idle(lambda: self._review_each(plans[1:]))
+        ImportRowDialog(self, plans[0], on_done=done)
     def review(self):
         sel=self._sel()
         if not sel: messagebox.showinfo('Review','Select a row first.',parent=self); return
         ImportRowDialog(self, sel[0], on_done=self.refresh)
     def apply(self):
+        # Two rows updating one expense would leave only the second charge and lose the first. Stop before
+        # anything is written and say which rows, so he can point one of them elsewhere.
+        seen={}; clash=[]
+        for i,p in enumerate(self.plans):
+            if p['action']!='merge': continue
+            e=plan_target(p)
+            if e['id'] in seen: clash.append(f"#{e['id']} {q(e['vendor'])}: rows {seen[e['id']]+1} and {i+1}")
+            else: seen[e['id']]=i
+        if clash:
+            messagebox.showwarning('Two rows, one expense',
+                'More than one row is set to update the same expense. Nothing was saved. Point one of them at a '
+                'different expense with Review…, or make it a new expense:\n  '+'\n  '.join(clash[:8]),parent=self)
+            return
         name=self.report_name.get().strip(); rid=self._merge_target(); renamed=None; skipped_report=None
         # Ignoring every row changes nothing, the report's name included.
         if all(p['action']=='skip' for p in self.plans): rid=None; name=''
@@ -3827,8 +3966,8 @@ class ConcurImportDialog(tk.Toplevel):
                 if not S.row('SELECT 1 FROM expense_codes WHERE code=? AND name=?',(r['expense_type_code'],r['expense_type_label'])):
                     S.execute('INSERT OR IGNORE INTO expense_codes(code,name) VALUES(?,?)',(r['expense_type_code'],r['expense_type_label'])); codes+=1
             if p['action']=='merge':
-                exp=p['candidates'][p['cand_index']][0]
-                vals={}
+                exp=plan_target(p)
+                vals={'export_matched_at':today()}
                 for f,_,_,default,why in plan_rows(r,exp):
                     # Only a both-sides-filled row is the user's call; card-fed and blank rows follow the rule.
                     if why!='both' or p['choices'].get(f,default)=='concur': apply_field(vals, r, f)
@@ -3847,7 +3986,7 @@ class ConcurImportDialog(tk.Toplevel):
             else:
                 vals={f:r[f] for f in CARD_FIELDS+MERGE_FIELDS+TYPE_PAIR if r.get(f) not in ('',None)}
                 vals.setdefault('transaction_date', today()); vals.setdefault('vendor','(unknown vendor)')
-                vals['user_id']=self.user_id; vals['report_id']=rid
+                vals['user_id']=self.user_id; vals['report_id']=rid; vals['export_matched_at']=today()
                 # Concur already holds the receipt image when the export says so; otherwise it's still owed.
                 vals['status']='Receipt received' if r.get('_receipt_in_concur') else 'Awaiting receipt'
                 if r['_extra']: vals['loose_notes']='\n'.join(f'{k}: {v}' for k,v in r['_extra'].items())
@@ -4103,7 +4242,7 @@ class App(tk.Tk):
         # Colour key for the list's row backgrounds (same colours as the tag_configure calls below).
         for text,bg,tip in [('owes a receipt','#fff3cd','No receipt attached yet, and the amount is at or over the receipt limit in Settings.'),
                             ("claim it soon: you're owed this money",'#fce8e6',
-                             f'You paid personally (Personal / reimbursable), it is not filed yet, and it is within '
+                             f'You paid personally (Out of Pocket), it is not filed yet, and it is within '
                              f'{REIMBURSE_ALERT_DAYS} days of its {REIMBURSE_DEADLINE_DAYS}-day claim deadline or of month-end.')]:
             sw=tk.Label(ver,text='   ',background=bg,relief='solid',borderwidth=1,width=3); sw.pack(side='left',padx=(14,0),pady=1)
             Tooltip(ttk.Label(ver,text=f' {text}',foreground='#555'),tip).widget.pack(side='left'); Tooltip(sw,tip)
