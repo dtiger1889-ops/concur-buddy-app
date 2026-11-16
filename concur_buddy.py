@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 APP_TITLE = "Concur Buddy"
-APP_VERSION = "2026.11.16.1"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
+APP_VERSION = "2026.11.16.2"  # date-based (YYYY.MM.DD; append .N for an Nth release same day). Shown in the title bar
 # + footer, and mirrored by the repo-root VERSION_<APP_VERSION>.txt marker so GitHub shows it at a glance.
 # Bump this AND rename the marker together on every release — dev/run_tests.py fails if they diverge.
 DB_NAME = "concur_buddy.sqlite3"
@@ -4767,18 +4767,31 @@ class App(tk.Tk):
             S.execute('UPDATE expenses SET report_id=NULL WHERE report_id=?',(id,)); S.execute('DELETE FROM reports WHERE id=?',(id,))
             self.refresh()
     def mark_filed(self):
-        ids=self.selected_expense_ids(); typ,id=self.selected()
+        # Only ticked rows count. The keyboard focus can sit on a row whose box was just unticked (Space), so it
+        # is never used as a fallback: filing a report you can see is unticked would be a surprise (audit 2026-11-16).
+        ids=self.selected_expense_ids(); rids=self.selected_report_ids()
         now=datetime.now().isoformat(timespec='seconds')
-        if ids:
-            for eid in ids: S.execute("UPDATE expenses SET status='Filed', filed_at=? WHERE id=?",(now,eid))
-            self.refresh()
-        elif typ=='R':
+        if rids:
             # Filing a REPORT files the report and every expense under it (that's what "filed in Concur" means).
-            n=S.scalar('SELECT COUNT(*) FROM expenses WHERE report_id=?',(id,)) or 0
-            name=S.scalar('SELECT name FROM reports WHERE id=?',(id,)) or 'this report'
-            if not messagebox.askyesno('Mark report filed', f'Mark report "{name}" and its {n} expense(s) as Filed?', parent=self): return
-            S.execute("UPDATE expenses SET status='Filed', filed_at=? WHERE report_id=?",(now,id))
-            S.execute("UPDATE reports SET status='Filed' WHERE id=?",(id,))
+            # Several selected reports are each filed this way; ticked expenses outside them are filed too.
+            # Before 2026-11-16 a selection holding expense rows skipped this branch, so the expenses were
+            # filed and the reports were not.
+            n=sum(S.scalar('SELECT COUNT(*) FROM expenses WHERE report_id=?',(r,)) or 0 for r in rids)
+            inside={e['id'] for r in rids for e in S.rows('SELECT id FROM expenses WHERE report_id=?',(r,))}
+            loose=[e for e in ids if e not in inside]
+            if len(rids)==1:
+                name=S.scalar('SELECT name FROM reports WHERE id=?',(rids[0],)) or 'this report'
+                what=f'report "{name}" and its {n} expense(s)'
+            else: what=f'{len(rids)} reports and their {n} expense(s)'
+            if loose: what+=f', plus {len(loose)} other selected expense(s),'
+            if not messagebox.askyesno('Mark report filed', f'Mark {what} as Filed?', parent=self): return
+            for r in rids:
+                S.execute("UPDATE expenses SET status='Filed', filed_at=? WHERE report_id=?",(now,r))
+                S.execute("UPDATE reports SET status='Filed' WHERE id=?",(r,))
+            for eid in loose: S.execute("UPDATE expenses SET status='Filed', filed_at=? WHERE id=?",(now,eid))
+            self.refresh()
+        elif ids:
+            for eid in ids: S.execute("UPDATE expenses SET status='Filed', filed_at=? WHERE id=?",(now,eid))
             self.refresh()
         else:
             messagebox.showinfo('Mark Filed','Select an expense or a report first.', parent=self)

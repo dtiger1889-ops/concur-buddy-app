@@ -1,4 +1,4 @@
-Concur Buddy — version 2026.11.16.1
+Concur Buddy — version 2026.11.16.2
 
 This filename encodes the currently-committed version so you can tell at a glance
 on GitHub what's published. It must match APP_VERSION in
@@ -10,6 +10,12 @@ Version scheme: YYYY.MM.DD, with an optional .N suffix for a second release the 
 day (e.g. 2026.07.01.2). On every release: bump APP_VERSION and `git mv` this marker
 to the new VERSION_<version>.txt name in the same commit. The newest entry goes first: More ▾ → Check for
 Updates shows every entry newer than the version the person is running.
+
+2026.11.16.2 — FIXES marking several reports Filed at once. With more than one report ticked, Mark Filed
+filed their expenses but left the reports themselves unfiled (or filed only one of them). Now every ticked
+report is filed along with all its expenses, plus any other expense you ticked, after one question that names
+them all. Mark Filed also only acts on rows whose box is ticked, never on a row you just unticked. **A report
+already left half-filed this way: tick it and press Mark Filed again.**
 
 2026.11.16.1 — "Out of Pocket" is now the name for money you paid yourself, the same words a Concur export
 uses (it used to say "Personal / reimbursable"). Before, an imported personal expense came in as "Out of
